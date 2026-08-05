@@ -492,7 +492,7 @@ class PersistenceController: ObservableObject {
             }
 
             description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
-                containerIdentifier: "iCloud.com.nebulaforge.nebulaforge"
+                containerIdentifier: "iCloud.com.ema19rivas99.nebulaforge"
             )
 
             description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)

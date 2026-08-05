@@ -28,7 +28,7 @@ targets:
       path: Sources/NebulaForge.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nebulaforge.nebulaforge
+        PRODUCT_BUNDLE_IDENTIFIER: com.ema19rivas99.nebulaforge
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
