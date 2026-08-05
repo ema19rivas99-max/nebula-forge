@@ -35,6 +35,3 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: "862WW535F7"
         CODE_SIGN_STYLE: Automatic
-      configs:
-        Release:
-          CODE_SIGN_IDENTITY: "Apple Distribution"
