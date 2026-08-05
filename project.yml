@@ -35,3 +35,18 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: "862WW535F7"
         CODE_SIGN_STYLE: Automatic
+schemes:
+  NebulaForge:
+    build:
+      targets:
+        NebulaForge: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    test:
+      config: Debug
