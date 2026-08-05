@@ -373,7 +373,7 @@ class IAPManager: ObservableObject {
         }
     }
 
-    func processTransaction(_ transaction: Transaction) async {
+    func processTransaction(_ transaction: StoreKit.Transaction) async {
         purchasedProductIDs.insert(transaction.productID)
     }
 
