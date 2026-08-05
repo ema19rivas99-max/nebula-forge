@@ -31,8 +31,12 @@ jobs:
       - name: Write App Store Connect API key
         env:
           APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
         run: |
           echo "$APPSTORE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          # altool (unlike xcodebuild) requires the key at this conventional path.
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$APPSTORE_API_KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_API_KEY_ID}.p8"
 
       - name: Archive
         env:
@@ -51,7 +55,7 @@ jobs:
             -authenticationKeyID "$APPSTORE_API_KEY_ID" \
             -authenticationKeyIssuerID "$APPSTORE_API_ISSUER_ID"
 
-      - name: Export and upload to TestFlight
+      - name: Export IPA
         env:
           APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
@@ -82,6 +86,18 @@ jobs:
             echo "No embedded.mobileprovision found in exported IPA"
           fi
 
+      - name: Upload to TestFlight
+        env:
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -1)
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$APPSTORE_API_KEY_ID" \
+            --apiIssuer "$APPSTORE_API_ISSUER_ID"
+
       - name: Clean up API key
         if: always()
-        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+        run: |
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+          rm -rf "$HOME/.appstoreconnect/private_keys"
