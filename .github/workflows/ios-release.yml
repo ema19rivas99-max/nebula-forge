@@ -51,6 +51,20 @@ jobs:
             -authenticationKeyID "$APPSTORE_API_KEY_ID" \
             -authenticationKeyIssuerID "$APPSTORE_API_ISSUER_ID"
 
+      - name: Inspect embedded entitlements (debug)
+        run: |
+          PROFILE="$RUNNER_TEMP/NebulaForge.xcarchive/Products/Applications/NebulaForge.app/embedded.mobileprovision"
+          if [ -f "$PROFILE" ]; then
+            security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+            echo "--- Provisioning profile name ---"
+            /usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist"
+            echo "--- Embedded entitlements ---"
+            /usr/libexec/PlistBuddy -c "Print :Entitlements" "$RUNNER_TEMP/profile.plist"
+          else
+            echo "No embedded.mobileprovision found at $PROFILE"
+            find "$RUNNER_TEMP/NebulaForge.xcarchive" -name "*.mobileprovision"
+          fi
+
       - name: Export and upload to TestFlight
         env:
           APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
