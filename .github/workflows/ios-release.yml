@@ -10,6 +10,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # App Store uploads require the iOS 26 SDK or later, so pin to the newest
+      # Xcode on the runner rather than whatever `xcode-select` defaults to.
+      - name: Select newest Xcode
+        run: |
+          echo "Available Xcode versions:"
+          ls -d /Applications/Xcode*.app
+          NEWEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$NEWEST" ]; then NEWEST=/Applications/Xcode.app; fi
+          echo "Selecting $NEWEST"
+          sudo xcode-select -s "$NEWEST/Contents/Developer"
+          xcodebuild -version
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

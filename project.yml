@@ -18,8 +18,14 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: Nebula Forge
+        CFBundleIconName: AppIcon
         LSApplicationCategoryType: public.app-category.games
         ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSUserTrackingUsageDescription: "This identifier will be used to provide personalized ads and improve your gaming experience. You can change this at any time in Settings."
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -35,6 +41,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: "862WW535F7"
         CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 schemes:
   NebulaForge:
     build:
