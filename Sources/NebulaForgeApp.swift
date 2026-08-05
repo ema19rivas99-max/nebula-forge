@@ -474,29 +474,17 @@ extension CelestialItemEntity {
 class PersistenceController: ObservableObject {
     static let shared = PersistenceController()
 
-    let container: NSPersistentCloudKitContainer
+    let container: NSPersistentContainer
 
     var viewContext: NSManagedObjectContext {
         container.viewContext
     }
 
     init(inMemory: Bool = false) {
-        container = NSPersistentCloudKitContainer(name: "NebulaForge")
+        container = NSPersistentContainer(name: "NebulaForge")
 
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
-        } else {
-            // Enable CloudKit for iCloud sync
-            guard let description = container.persistentStoreDescriptions.first else {
-                fatalError("Failed to retrieve persistent store description")
-            }
-
-            description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
-                containerIdentifier: "iCloud.com.ema19rivas99.nebulaforge"
-            )
-
-            description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
-            description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
         }
 
         container.loadPersistentStores { _, error in

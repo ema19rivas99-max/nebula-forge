@@ -30,10 +30,6 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}
-        UIBackgroundModes:
-          - remote-notification
-    entitlements:
-      path: Sources/NebulaForge.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ema19rivas99.nebulaforge
