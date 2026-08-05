@@ -295,7 +295,7 @@ class GameCenterManager: NSObject, ObservableObject {
     func submitScore(_ score: Int64, leaderboardID: String = "nebulaforge.totalstarlight") {
         guard isAuthenticated else { return }
 
-        GKLeaderboard.submitScore(score, context: 0, player: GKLocalPlayer.local,
+        GKLeaderboard.submitScore(Int(score), context: 0, player: GKLocalPlayer.local,
             leaderboardIDs: [leaderboardID]) { error in
             if let error = error {
                 print("Failed to submit score: \(error.localizedDescription)")
