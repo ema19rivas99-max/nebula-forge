@@ -30,6 +30,7 @@ jobs:
           xcodebuild archive \
             -project NebulaForge.xcodeproj \
             -scheme NebulaForge \
+            -configuration Release \
             -archivePath "$RUNNER_TEMP/NebulaForge.xcarchive" \
             -destination "generic/platform=iOS" \
             -allowProvisioningUpdates \
