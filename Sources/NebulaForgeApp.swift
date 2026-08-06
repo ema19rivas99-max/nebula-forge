@@ -577,7 +577,7 @@ enum Element: String, CaseIterable, Codable {
 class IdleEngine: ObservableObject {
     @Published var totalProductionPerSec: Double = 0
     private var timer: Timer?
-    private var permanentMultiplier: Double = 1.0
+    var permanentMultiplier: Double = 1.0
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -633,11 +633,25 @@ class GameViewModel: ObservableObject {
     let idleEngine = IdleEngine()
     private var cancellables = Set<AnyCancellable>()
     private let persistence = PersistenceController.shared
+    private var hasPrestiged = false
+
+    private enum DefaultsKey {
+        static let hasSavedState = "nf.hasSavedState"
+        static let stardust = "nf.stardust"
+        static let starlightShards = "nf.starlightShards"
+        static let nebulaGems = "nf.nebulaGems"
+        static let galaxyMarks = "nf.galaxyMarks"
+        static let celestialRank = "nf.celestialRank"
+        static let permanentMultiplier = "nf.permanentMultiplier"
+        static let hasPrestiged = "nf.hasPrestiged"
+        static let lastSaveDate = "nf.lastSaveDate"
+    }
 
     init() {
         setupIdleCollection()
-        initializeBoard()
-        loadGameState()
+        if !loadGameState() {
+            initializeBoard()
+        }
     }
 
     func setupIdleCollection() {
@@ -687,7 +701,7 @@ class GameViewModel: ObservableObject {
         let generator = UIImpactFeedbackGenerator(style: .medium)
         generator.impactOccurred()
 
-        persistence.save()
+        saveGameState()
         return true
     }
 
@@ -705,7 +719,7 @@ class GameViewModel: ObservableObject {
         // Submit score to Game Center
         GameCenterManager.shared.submitScore(Int64(stardust))
 
-        persistence.save()
+        saveGameState()
         return true
     }
 
@@ -716,7 +730,7 @@ class GameViewModel: ObservableObject {
         gridTiles[row][col].placedItem = nil
 
         idleEngine.recalculate(from: gridTiles)
-        persistence.save()
+        saveGameState()
     }
 
     func triggerSupernova() -> Bool {
@@ -727,21 +741,21 @@ class GameViewModel: ObservableObject {
         // Calculate Galaxy Marks earned
         let earnedMarks = placedCount / 5
         galaxyMarks += earnedMarks
-
-        // Reset board but give permanent multiplier
-        boardItems.removeAll()
-        gridTiles = (0..<5).map { row in
-            (0..<5).map { col in
-                GridTile(row: row, col: col, isUnlocked: row < 3 && col < 4, placedItem: nil)
-            }
-        }
+        hasPrestiged = true
 
         // Apply permanent boost
         let multiplier = 1.0 + (Double(earnedMarks) * 0.1)
         idleEngine.applyPermanentMultiplier(multiplier)
 
-        // Add starter items for new cycle
+        // Start a new cycle, then unlock the larger post-prestige grid
+        // (must happen after initializeBoard(), which would otherwise reset
+        // the grid back to the small starting pattern).
         initializeBoard()
+        gridTiles = (0..<5).map { row in
+            (0..<5).map { col in
+                GridTile(row: row, col: col, isUnlocked: row < 3 && col < 4, placedItem: nil)
+            }
+        }
         idleEngine.recalculate(from: gridTiles)
 
         // Submit prestige achievement
@@ -751,38 +765,132 @@ class GameViewModel: ObservableObject {
         let generator = UIImpactFeedbackGenerator(style: .heavy)
         generator.impactOccurred()
 
-        persistence.save()
+        saveGameState()
         return true
     }
 
-    func loadGameState() {
+    func saveGameState() {
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: DefaultsKey.hasSavedState)
+        defaults.set(stardust, forKey: DefaultsKey.stardust)
+        defaults.set(starlightShards, forKey: DefaultsKey.starlightShards)
+        defaults.set(nebulaGems, forKey: DefaultsKey.nebulaGems)
+        defaults.set(galaxyMarks, forKey: DefaultsKey.galaxyMarks)
+        defaults.set(celestialRank, forKey: DefaultsKey.celestialRank)
+        defaults.set(idleEngine.permanentMultiplier, forKey: DefaultsKey.permanentMultiplier)
+        defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
+        defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
+
+        let context = persistence.viewContext
+
+        // Replace all stored items with the current in-memory state rather
+        // than trying to diff/upsert — the item counts here are tiny.
+        if let existing = try? context.fetch(CelestialItemEntity.fetchRequest()) {
+            for entity in existing {
+                context.delete(entity)
+            }
+        }
+
+        for item in boardItems {
+            insertEntity(for: item, isPlaced: false, row: 0, col: 0, in: context)
+        }
+        for row in gridTiles {
+            for tile in row {
+                if let item = tile.placedItem {
+                    insertEntity(for: item, isPlaced: true, row: tile.row, col: tile.col, in: context)
+                }
+            }
+        }
+
+        persistence.save()
+    }
+
+    private func insertEntity(for item: CelestialItem, isPlaced: Bool, row: Int, col: Int, in context: NSManagedObjectContext) {
+        let entity = CelestialItemEntity(context: context)
+        entity.id = item.id
+        entity.chainID = item.chainID
+        entity.tier = Int16(item.tier)
+        entity.element = item.element.rawValue
+        entity.name = item.name
+        entity.baseProduction = item.baseProduction
+        entity.isPlaced = isPlaced
+        entity.gridRow = Int16(row)
+        entity.gridCol = Int16(col)
+    }
+
+    /// Restores saved state and returns whether any was found. When `false`,
+    /// the caller should fall back to `initializeBoard()` for a fresh start.
+    @discardableResult
+    func loadGameState() -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: DefaultsKey.hasSavedState) else { return false }
+
+        stardust = defaults.double(forKey: DefaultsKey.stardust)
+        starlightShards = defaults.integer(forKey: DefaultsKey.starlightShards)
+        nebulaGems = defaults.integer(forKey: DefaultsKey.nebulaGems)
+        galaxyMarks = defaults.integer(forKey: DefaultsKey.galaxyMarks)
+        celestialRank = defaults.integer(forKey: DefaultsKey.celestialRank)
+        hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
+        idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
+
+        gridTiles = (0..<5).map { row in
+            (0..<5).map { col in
+                let unlocked = hasPrestiged ? (row < 3 && col < 4) : (row < 2 && col < 3)
+                return GridTile(row: row, col: col, isUnlocked: unlocked, placedItem: nil)
+            }
+        }
+
         let context = persistence.viewContext
         let request = CelestialItemEntity.fetchRequest()
 
         do {
             let savedItems = try context.fetch(request)
-            if !savedItems.isEmpty {
-                boardItems = savedItems.compactMap { entity in
-                    guard let id = entity.id,
-                          let chainID = entity.chainID,
-                          let elementStr = entity.element,
-                          let name = entity.name,
-                          let element = Element(rawValue: elementStr) else { return nil }
+            var loadedBoardItems: [CelestialItem] = []
 
-                    return CelestialItem(
-                        id: id,
-                        chainID: chainID,
-                        tier: Int(entity.tier),
-                        element: element,
-                        baseProduction: entity.baseProduction,
-                        name: name,
-                        position: entity.isPlaced ? (Int(entity.gridRow), Int(entity.gridCol)) : nil
-                    )
+            for entity in savedItems {
+                guard let id = entity.id,
+                      let chainID = entity.chainID,
+                      let elementStr = entity.element,
+                      let name = entity.name,
+                      let element = Element(rawValue: elementStr) else { continue }
+
+                let item = CelestialItem(
+                    id: id,
+                    chainID: chainID,
+                    tier: Int(entity.tier),
+                    element: element,
+                    baseProduction: entity.baseProduction,
+                    name: name,
+                    position: entity.isPlaced ? (Int(entity.gridRow), Int(entity.gridCol)) : nil
+                )
+
+                if entity.isPlaced {
+                    let row = Int(entity.gridRow)
+                    let col = Int(entity.gridCol)
+                    if gridTiles.indices.contains(row), gridTiles[row].indices.contains(col) {
+                        gridTiles[row][col].placedItem = item
+                    }
+                } else {
+                    loadedBoardItems.append(item)
                 }
             }
+
+            boardItems = loadedBoardItems
         } catch {
             print("Failed to load game state: \(error)")
         }
+
+        idleEngine.recalculate(from: gridTiles)
+
+        // Credit production earned while the app was closed.
+        if let lastSave = defaults.object(forKey: DefaultsKey.lastSaveDate) as? Date {
+            let elapsed = Date().timeIntervalSince(lastSave)
+            if elapsed > 0 {
+                stardust += idleEngine.totalProductionPerSec * elapsed
+            }
+        }
+
+        return true
     }
 }
 
