@@ -333,62 +333,6 @@ class IAPManager: ObservableObject {
     }
 }
 
-// MARK: - Loot Box Odds Disclosure (Apple Guideline 3.1.1)
-struct LootBoxOddsView: View {
-    @Environment(\.dismiss) var dismiss
-
-    let odds = [
-        ("Common Stardust Pack", "60%", Color.gray),
-        ("Rare Comet Shard", "30%", Color.blue),
-        ("Epic Guardian Egg", "8%", Color.purple),
-        ("Legendary Mythic Item", "2%", Color.orange)
-    ]
-
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 20) {
-                Text("Cosmic Chest Contents")
-                    .font(.title2.bold())
-
-                Text("All paid loot boxes display exact probabilities as required by platform policies.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-
-                ForEach(odds, id: \.0) { item, chance, color in
-                    HStack {
-                        Circle()
-                            .fill(color)
-                            .frame(width: 12, height: 12)
-                        Text(item)
-                        Spacer()
-                        Text(chance)
-                            .bold()
-                            .foregroundColor(color)
-                    }
-                    .padding(.horizontal)
-                }
-
-                Text("Probabilities are fixed and verified. No manipulation occurs based on player behavior or spending.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding()
-
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Drop Rates")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Core Data Models
 // @objc keeps the Objective-C runtime name unmangled so it matches
 // `representedClassName` in the .xcdatamodel; without it Core Data can't
@@ -774,7 +718,6 @@ class GameViewModel: ObservableObject {
     @Published var galaxyMarks: Int = 0
     @Published var boardItems: [CelestialItem] = []
     @Published var gridTiles: [[GridTile]] = []
-    @Published var showLootBoxOdds = false
     @Published var celestialRank: Int = 1
 
     @Published var totalMerges: Int = 0
@@ -1957,11 +1900,16 @@ struct CelestialItemSprite: View {
         }
     }
 
+    /// Asset name for this element/tier, e.g. `item_fire_t3`.
+    private var assetName: String {
+        "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
+    }
+
     var body: some View {
         ZStack {
             if item.tier >= 3 {
                 Circle()
-                    .fill(baseColor.opacity(0.3))
+                    .fill(baseColor.opacity(0.35))
                     .frame(width: size + 10, height: size + 10)
                     .blur(radius: glowRadius)
                     // Higher tiers breathe, so power reads at a glance.
@@ -1973,58 +1921,16 @@ struct CelestialItemSprite: View {
                     .onAppear { pulse = true }
             }
 
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: gradientColors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: size, height: size)
-                .shadow(color: baseColor.opacity(0.7), radius: item.tier >= 5 ? 12 : 5)
-
-            Image(systemName: symbolName)
-                .font(.system(size: size * symbolScale))
-                .foregroundColor(.white)
-                .shadow(radius: item.tier > 3 ? 2 : 0)
-
-            if item.tier >= 6 {
-                ForEach(0..<min(item.tier - 5, 3), id: \.self) { i in
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 8))
-                        .foregroundColor(.white)
-                        .offset(
-                            x: cos(Double(i) * 2.0) * size / 2.5,
-                            y: sin(Double(i) * 2.0) * size / 2.5
-                        )
-                }
-            }
+            Image(assetName)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size + 12, height: size + 12)
+                .shadow(color: baseColor.opacity(0.5), radius: item.tier >= 5 ? 10 : 4)
         }
         .frame(width: size + 20, height: size + 20)
     }
 
     private var glowRadius: CGFloat { min(2 + CGFloat(item.tier) * 1.5, 15) }
-
-    // Clamped so very high tiers don't overflow the circle.
-    private var symbolScale: CGFloat { min(0.7 + CGFloat(item.tier) * 0.05, 0.95) }
-
-    private var gradientColors: [Color] {
-        switch item.tier {
-        case 0...2: return [baseColor.opacity(0.6), baseColor]
-        case 3...5: return [baseColor, baseColor.opacity(0.8), .white.opacity(0.6)]
-        default: return [baseColor, .white.opacity(0.9), baseColor]
-        }
-    }
-
-    private var symbolName: String {
-        switch item.element {
-        case .fire: return item.tier > 5 ? "flame.fill" : "flame"
-        case .ice: return "snowflake"
-        case .void: return item.tier > 3 ? "moon.stars.fill" : "moon.stars"
-        case .radiant: return "sun.max.fill"
-        }
-    }
 }
 
 struct HexTileView: View {
@@ -2299,11 +2205,10 @@ struct PrestigeView: View {
     }
 }
 
-// MARK: - Shop View (with Loot Box Odds)
+// MARK: - Shop View
 struct ShopView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @StateObject private var iapManager = IAPManager.shared
-    @State private var showOdds = false
 
     var body: some View {
         NavigationView {
@@ -2328,23 +2233,25 @@ struct ShopView: View {
                         .background(.ultraThinMaterial)
                         .cornerRadius(15)
 
-                        // Products
-                        ForEach(iapManager.products, id: \.id) { product in
-                            ShopProductRow(product: product, iapManager: iapManager)
-                        }
-
-                        // Loot Box Odds Button
-                        Button(action: {
-                            showOdds = true
-                        }) {
-                            HStack {
-                                Image(systemName: "info.circle")
-                                Text("View Drop Rates")
+                        if iapManager.products.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "shippingbox.fill")
+                                    .font(.system(size: 40))
+                                    .foregroundColor(.purple.opacity(0.7))
+                                Text("Store opening soon")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                Text("Gems can already be earned free by triggering a Supernova on the Nova tab.")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 30)
                             }
-                            .foregroundColor(.blue)
-                        }
-                        .sheet(isPresented: $showOdds) {
-                            LootBoxOddsView()
+                            .padding(.vertical, 40)
+                        } else {
+                            ForEach(iapManager.products, id: \.id) { product in
+                                ShopProductRow(product: product, iapManager: iapManager)
+                            }
                         }
                     }
                     .padding()
