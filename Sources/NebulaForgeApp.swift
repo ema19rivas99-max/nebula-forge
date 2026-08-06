@@ -452,6 +452,10 @@ struct LootBoxOddsView: View {
 }
 
 // MARK: - Core Data Models
+// @objc keeps the Objective-C runtime name unmangled so it matches
+// `representedClassName` in the .xcdatamodel; without it Core Data can't
+// resolve the entity and throws on insert.
+@objc(CelestialItemEntity)
 class CelestialItemEntity: NSManagedObject {}
 
 extension CelestialItemEntity {
@@ -806,7 +810,14 @@ class GameViewModel: ObservableObject {
     }
 
     private func insertEntity(for item: CelestialItem, isPlaced: Bool, row: Int, col: Int, in context: NSManagedObjectContext) {
-        let entity = CelestialItemEntity(context: context)
+        // Look the entity up by name rather than relying on class-name
+        // resolution, which is fragile across Swift/ObjC name mangling.
+        guard let description = NSEntityDescription.entity(forEntityName: "CelestialItemEntity", in: context) else {
+            print("Missing CelestialItemEntity in the Core Data model")
+            return
+        }
+
+        let entity = CelestialItemEntity(entity: description, insertInto: context)
         entity.id = item.id
         entity.chainID = item.chainID
         entity.tier = Int16(item.tier)
