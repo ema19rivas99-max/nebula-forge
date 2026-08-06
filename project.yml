@@ -19,6 +19,11 @@ targets:
       properties:
         CFBundleDisplayName: Nebula Forge
         CFBundleIconName: AppIcon
+        # Declared explicitly so a command-line CURRENT_PROJECT_VERSION override
+        # actually reaches the built Info.plist; without this the build number
+        # is baked in at project-generation time and uploads collide.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         LSApplicationCategoryType: public.app-category.games
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:

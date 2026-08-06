@@ -77,12 +77,21 @@ jobs:
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist ExportOptions.plist
 
-      - name: Inspect embedded entitlements of exported IPA (debug)
+      - name: Verify exported IPA
         run: |
           IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -1)
           echo "IPA: $IPA"
           rm -rf "$RUNNER_TEMP/ipa_unzipped"
           unzip -q "$IPA" -d "$RUNNER_TEMP/ipa_unzipped"
+
+          APP_PLIST=$(find "$RUNNER_TEMP/ipa_unzipped/Payload" -name "Info.plist" -maxdepth 2 | head -1)
+          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+          echo "CFBundleVersion in IPA: $BUILD_NUMBER (expected ${{ github.run_number }})"
+          if [ "$BUILD_NUMBER" != "${{ github.run_number }}" ]; then
+            echo "::error::Build number override did not reach the IPA; upload would be rejected as a duplicate."
+            exit 1
+          fi
+
           PROFILE=$(find "$RUNNER_TEMP/ipa_unzipped" -name "embedded.mobileprovision" | head -1)
           if [ -n "$PROFILE" ]; then
             security cms -D -i "$PROFILE" > "$RUNNER_TEMP/exported_profile.plist"
@@ -105,9 +114,20 @@ jobs:
           echo "$APPSTORE_API_KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_API_KEY_ID}.p8"
 
           IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -1)
+
+          # altool can print delivery errors and still exit 0, which would
+          # report a green build for an upload Apple actually rejected.
+          set +e
           xcrun altool --upload-app -f "$IPA" -t ios \
             --apiKey "$APPSTORE_API_KEY_ID" \
-            --apiIssuer "$APPSTORE_API_ISSUER_ID"
+            --apiIssuer "$APPSTORE_API_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/altool.log"
+          ALTOOL_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$ALTOOL_STATUS" -ne 0 ] || grep -q "ERROR" "$RUNNER_TEMP/altool.log"; then
+            echo "::error::altool failed to deliver the build to App Store Connect."
+            exit 1
+          fi
 
       - name: Clean up secrets
         if: always()
