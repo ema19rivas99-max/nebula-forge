@@ -26,7 +26,6 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSUserTrackingUsageDescription: "This identifier will be used to provide personalized ads and improve your gaming experience. You can change this at any time in Settings."
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}

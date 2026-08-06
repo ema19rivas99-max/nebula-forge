@@ -1,8 +1,6 @@
 import SwiftUI
 import StoreKit
 import GameKit
-import AppTrackingTransparency
-import AdSupport
 import CoreData
 import Combine
 import SpriteKit
@@ -18,9 +16,6 @@ struct NebulaForgeApp: App {
         WindowGroup {
             if !privacyManager.hasAcceptedPrivacy {
                 PrivacyConsentView()
-                    .environmentObject(privacyManager)
-            } else if !privacyManager.hasAcceptedATT {
-                ATTTrackingView()
                     .environmentObject(privacyManager)
             } else {
                 ContentView()
@@ -77,27 +72,13 @@ class PrivacyManager: ObservableObject {
     @Published var hasAcceptedPrivacy: Bool {
         didSet { UserDefaults.standard.set(hasAcceptedPrivacy, forKey: "hasAcceptedPrivacy") }
     }
-    @Published var hasAcceptedATT: Bool {
-        didSet { UserDefaults.standard.set(hasAcceptedATT, forKey: "hasAcceptedATT") }
-    }
-    @Published var trackingAuthorized: Bool = false
 
     private init() {
         self.hasAcceptedPrivacy = UserDefaults.standard.bool(forKey: "hasAcceptedPrivacy")
-        self.hasAcceptedATT = UserDefaults.standard.bool(forKey: "hasAcceptedATT")
     }
 
     func acceptPrivacyPolicy() {
         hasAcceptedPrivacy = true
-    }
-
-    func requestTrackingAuthorization() {
-        ATTrackingManager.requestTrackingAuthorization { [weak self] status in
-            DispatchQueue.main.async {
-                self?.trackingAuthorized = (status == .authorized)
-                self?.hasAcceptedATT = true
-            }
-        }
     }
 }
 
@@ -135,7 +116,7 @@ struct PrivacyConsentView: View {
                         .font(.headline)
                         .foregroundColor(.white)
 
-                    Text("• Your game progress is stored privately in your iCloud account to sync across your devices.")
+                    Text("• Your game progress is saved only on this device.")
                         .foregroundColor(.white.opacity(0.8))
 
                     Text("• We do not collect, share, or sell any personal data.")
@@ -144,7 +125,7 @@ struct PrivacyConsentView: View {
                     Text("• Leaderboard participation is optional and only shares your Game Center nickname and score.")
                         .foregroundColor(.white.opacity(0.8))
 
-                    Text("• Optional ads are provided by Apple's advertising network and respect your privacy choices.")
+                    Text("• This game contains no ads and does not track you.")
                         .foregroundColor(.white.opacity(0.8))
                 }
                 .padding()
@@ -201,19 +182,19 @@ struct PrivacyPolicyView: View {
 
                         Text("1. Information We Collect")
                             .font(.headline)
-                        Text("We collect your Game Center ID and game progress data solely for iCloud synchronization and leaderboard functionality. This data is stored in your private iCloud account and is not accessible to us.")
+                        Text("Your game progress is stored only on this device. We do not upload it, and we cannot access it. If you use Game Center, Apple provides us your Game Center nickname and submitted scores for leaderboard functionality.")
 
                         Text("2. How We Use Your Information")
                             .font(.headline)
-                        Text("Your game data is used exclusively to save your progress and enable cross-device play. Leaderboard scores are shared publicly with your Game Center nickname.")
+                        Text("Game data is used solely to save your progress on this device. Leaderboard scores, if you choose to use Game Center, are shared publicly alongside your Game Center nickname.")
 
                         Text("3. Third-Party Services")
                             .font(.headline)
-                        Text("We use Apple's Game Center and iCloud services. No third-party analytics, advertising networks, or data processors are used that collect personal information.")
+                        Text("We use Apple's Game Center for optional leaderboards. This game contains no advertising, no analytics, and no third-party trackers, and does not track you across apps or websites.")
 
                         Text("4. Your Rights")
                             .font(.headline)
-                        Text("You can delete all your data by removing the app and deleting iCloud data from your device settings. You can opt out of Game Center features in Settings.")
+                        Text("Deleting the app removes all game data stored on your device. You can opt out of Game Center features at any time in your device Settings.")
 
                         Text("5. Contact")
                             .font(.headline)
@@ -221,7 +202,7 @@ struct PrivacyPolicyView: View {
 
                         Text("6. Children's Privacy")
                             .font(.headline)
-                        Text("Nebula Forge is rated 4+ and does not knowingly collect personal information from children under 13 without parental consent. All data collection is through Apple's services which require parental approval for child accounts.")
+                        Text("Nebula Forge is rated 4+ and does not knowingly collect personal information from children under 13. The only optional data sharing is through Apple's Game Center, which requires parental approval for child accounts.")
                     }
                     .padding()
                 }
@@ -233,49 +214,6 @@ struct PrivacyPolicyView: View {
                     Button("Done") { dismiss() }
                 }
             }
-        }
-    }
-}
-
-// MARK: - ATT Tracking Authorization View
-struct ATTTrackingView: View {
-    @EnvironmentObject var privacyManager: PrivacyManager
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.05, green: 0.02, blue: 0.3), Color(red: 0.1, green: 0.05, blue: 0.4)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            VStack(spacing: 20) {
-                Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.yellow)
-
-                Text("Personalized Experience")
-                    .font(.title.bold())
-                    .foregroundColor(.white)
-
-                Text("To provide relevant in-game offers and ads, we need your permission to track activity. You can change this anytime in Settings.")
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.white.opacity(0.8))
-                    .padding(.horizontal)
-
-                Button("Allow Tracking") {
-                    privacyManager.requestTrackingAuthorization()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-
-                Button("Ask App Not to Track") {
-                    privacyManager.hasAcceptedATT = true
-                }
-                .foregroundColor(.gray)
-            }
-            .padding()
         }
     }
 }
@@ -583,10 +521,16 @@ class IdleEngine: ObservableObject {
     private var timer: Timer?
     var permanentMultiplier: Double = 1.0
 
+    private let tickInterval: TimeInterval = 0.1
+
+    /// Called every tick with the stardust produced during that tick.
+    var onTick: ((Double) -> Void)?
+
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            // Production will be consumed by GameViewModel
+        stop()
+        timer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] _ in
+            guard let self = self, self.totalProductionPerSec > 0 else { return }
+            self.onTick?(self.totalProductionPerSec * self.tickInterval)
         }
     }
 
@@ -595,19 +539,39 @@ class IdleEngine: ObservableObject {
         timer = nil
     }
 
-    func recalculate(from grid: [[GridTile]], multiplier: Double = 1.0) {
+    func recalculate(from grid: [[GridTile]]) {
         var base = 0.0
         for row in grid {
             for tile in row {
-                if let item = tile.placedItem {
-                    var prod = item.baseProduction
-                    // Simplified adjacency bonus
-                    prod *= multiplier
-                    base += prod
-                }
+                guard let item = tile.placedItem else { continue }
+                // Neighbouring items of the same element reinforce each other.
+                let sameElementNeighbours = neighbours(of: tile, in: grid)
+                    .filter { $0.element == item.element }
+                    .count
+                base += item.baseProduction * (1.0 + 0.15 * Double(sameElementNeighbours))
             }
         }
         totalProductionPerSec = base * permanentMultiplier
+    }
+
+    /// Items placed on the six tiles adjacent to `tile` in the offset hex layout.
+    private func neighbours(of tile: GridTile, in grid: [[GridTile]]) -> [CelestialItem] {
+        // Even and odd rows are staggered, so the diagonal offsets differ.
+        let isEvenRow = tile.row % 2 == 0
+        let offsets: [(Int, Int)] = isEvenRow
+            ? [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, 1)]
+            : [(0, -1), (0, 1), (-1, -1), (-1, 0), (1, -1), (1, 0)]
+
+        var result: [CelestialItem] = []
+        for offset in offsets {
+            let row = tile.row + offset.0
+            let col = tile.col + offset.1
+            guard grid.indices.contains(row), grid[row].indices.contains(col) else { continue }
+            if let neighbour = grid[row][col].placedItem {
+                result.append(neighbour)
+            }
+        }
+        return result
     }
 
     func applyPermanentMultiplier(_ mult: Double) {
@@ -634,10 +598,24 @@ class GameViewModel: ObservableObject {
     @Published var showLootBoxOdds = false
     @Published var celestialRank: Int = 1
 
+    @Published var totalMerges: Int = 0
+
     let idleEngine = IdleEngine()
-    private var cancellables = Set<AnyCancellable>()
     private let persistence = PersistenceController.shared
     private var hasPrestiged = false
+
+    /// Offline production is credited on relaunch, but capped so that leaving
+    /// the game for weeks doesn't hand back an absurd (and unreadable) balance.
+    private let maxOfflineHours: Double = 8
+
+    /// Cost in Starlight Shards to unlock one additional grid tile.
+    var tileUnlockCost: Int {
+        let unlocked = gridTiles.flatMap { $0 }.filter { $0.isUnlocked }.count
+        return unlocked * 5
+    }
+
+    /// Cost in Nebula Gems to conjure a fresh tier-0 item onto the board.
+    let itemSummonCost = 5
 
     private enum DefaultsKey {
         static let hasSavedState = "nf.hasSavedState"
@@ -648,6 +626,8 @@ class GameViewModel: ObservableObject {
         static let celestialRank = "nf.celestialRank"
         static let permanentMultiplier = "nf.permanentMultiplier"
         static let hasPrestiged = "nf.hasPrestiged"
+        static let totalMerges = "nf.totalMerges"
+        static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
     }
 
@@ -659,13 +639,9 @@ class GameViewModel: ObservableObject {
     }
 
     func setupIdleCollection() {
-        idleEngine.$totalProductionPerSec
-            .sink { [weak self] rate in
-                guard let self = self else { return }
-                self.stardust += rate / 10.0
-            }
-            .store(in: &cancellables)
-
+        idleEngine.onTick = { [weak self] produced in
+            self?.stardust += produced
+        }
         idleEngine.start()
     }
 
@@ -692,19 +668,67 @@ class GameViewModel: ObservableObject {
 
     func attemptMerge(_ item1: CelestialItem, _ item2: CelestialItem) -> Bool {
         guard let merged = CelestialItem.merge(item1: item1, item2: item2) else {
-            // Haptic feedback for failed merge
-            let generator = UINotificationFeedbackGenerator()
-            generator.notificationOccurred(.error)
+            HapticManager.shared.mergeFail()
             return false
         }
 
         boardItems.removeAll { $0.id == item1.id || $0.id == item2.id }
         boardItems.append(merged)
 
-        // Haptic feedback for successful merge
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
+        // Merging is the main source of Starlight Shards; higher tiers pay more.
+        starlightShards += merged.tier
+        totalMerges += 1
+        celestialRank = 1 + totalMerges / 10
 
+        HapticManager.shared.mergeSuccess()
+
+        saveGameState()
+        return true
+    }
+
+    /// Spends Starlight Shards to unlock the next locked tile, nearest first.
+    @discardableResult
+    func unlockNextTile() -> Bool {
+        guard starlightShards >= tileUnlockCost else { return false }
+        for row in gridTiles.indices {
+            for col in gridTiles[row].indices where !gridTiles[row][col].isUnlocked {
+                starlightShards -= tileUnlockCost
+                gridTiles[row][col].isUnlocked = true
+                HapticManager.shared.itemPlace()
+                saveGameState()
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Spends Nebula Gems to add a random tier-0 item to the merge board.
+    @discardableResult
+    func summonItem() -> Bool {
+        guard nebulaGems >= itemSummonCost else { return false }
+        nebulaGems -= itemSummonCost
+
+        let choices: [(chain: String, element: Element, production: Double, name: String)] = [
+            ("fire_basic", .fire, 1, "Stardust"),
+            ("ice_basic", .ice, 1, "Frost Dust"),
+            ("void_basic", .void, 1.5, "Dark Matter"),
+            ("radiant_basic", .radiant, 2, "Sunmote")
+        ]
+        let pick = choices.randomElement()!
+
+        boardItems.append(
+            CelestialItem(
+                id: UUID(),
+                chainID: pick.chain,
+                tier: 0,
+                element: pick.element,
+                baseProduction: pick.production,
+                name: pick.name,
+                position: nil
+            )
+        )
+
+        HapticManager.shared.itemPlace()
         saveGameState()
         return true
     }
@@ -721,7 +745,7 @@ class GameViewModel: ObservableObject {
         idleEngine.recalculate(from: gridTiles)
 
         // Submit score to Game Center
-        GameCenterManager.shared.submitScore(Int64(stardust))
+        GameCenterManager.shared.submitScore(clampedScore(stardust))
 
         saveGameState()
         return true
@@ -745,6 +769,8 @@ class GameViewModel: ObservableObject {
         // Calculate Galaxy Marks earned
         let earnedMarks = placedCount / 5
         galaxyMarks += earnedMarks
+        // Prestiging is the only source of Nebula Gems.
+        nebulaGems += earnedMarks * 2
         hasPrestiged = true
 
         // Apply permanent boost
@@ -765,9 +791,7 @@ class GameViewModel: ObservableObject {
         // Submit prestige achievement
         GameCenterManager.shared.submitScore(Int64(galaxyMarks), leaderboardID: "nebulaforge.prestige")
 
-        // Haptic
-        let generator = UIImpactFeedbackGenerator(style: .heavy)
-        generator.impactOccurred()
+        HapticManager.shared.supernova()
 
         saveGameState()
         return true
@@ -783,7 +807,15 @@ class GameViewModel: ObservableObject {
         defaults.set(celestialRank, forKey: DefaultsKey.celestialRank)
         defaults.set(idleEngine.permanentMultiplier, forKey: DefaultsKey.permanentMultiplier)
         defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
+        defaults.set(totalMerges, forKey: DefaultsKey.totalMerges)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
+
+        // Tiles can be unlocked by spending shards, so the unlocked set has to
+        // be stored rather than recomputed from prestige state alone.
+        let unlockedKeys = gridTiles.flatMap { $0 }
+            .filter { $0.isUnlocked }
+            .map { "\($0.row),\($0.col)" }
+        defaults.set(unlockedKeys, forKey: DefaultsKey.unlockedTiles)
 
         let context = persistence.viewContext
 
@@ -840,13 +872,19 @@ class GameViewModel: ObservableObject {
         starlightShards = defaults.integer(forKey: DefaultsKey.starlightShards)
         nebulaGems = defaults.integer(forKey: DefaultsKey.nebulaGems)
         galaxyMarks = defaults.integer(forKey: DefaultsKey.galaxyMarks)
-        celestialRank = defaults.integer(forKey: DefaultsKey.celestialRank)
+        celestialRank = max(1, defaults.integer(forKey: DefaultsKey.celestialRank))
         hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
+        totalMerges = defaults.integer(forKey: DefaultsKey.totalMerges)
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
 
+        // Saves written before tile unlocking existed have no stored set, so
+        // fall back to deriving it from prestige state.
+        let unlockedKeys = Set(defaults.stringArray(forKey: DefaultsKey.unlockedTiles) ?? [])
         gridTiles = (0..<5).map { row in
             (0..<5).map { col in
-                let unlocked = hasPrestiged ? (row < 3 && col < 4) : (row < 2 && col < 3)
+                let unlocked = unlockedKeys.isEmpty
+                    ? (hasPrestiged ? (row < 3 && col < 4) : (row < 2 && col < 3))
+                    : unlockedKeys.contains("\(row),\(col)")
                 return GridTile(row: row, col: col, isUnlocked: unlocked, placedItem: nil)
             }
         }
@@ -893,9 +931,10 @@ class GameViewModel: ObservableObject {
 
         idleEngine.recalculate(from: gridTiles)
 
-        // Credit production earned while the app was closed.
+        // Credit production earned while the app was closed, capped so a long
+        // absence can't return a nonsensical balance.
         if let lastSave = defaults.object(forKey: DefaultsKey.lastSaveDate) as? Date {
-            let elapsed = Date().timeIntervalSince(lastSave)
+            let elapsed = min(Date().timeIntervalSince(lastSave), maxOfflineHours * 3600)
             if elapsed > 0 {
                 stardust += idleEngine.totalProductionPerSec * elapsed
             }
@@ -957,7 +996,7 @@ struct MergeBoardView: View {
                 VStack {
                     // Resource Bar
                     HStack {
-                        ResourceBadge(icon: "star.fill", value: Int(gameVM.stardust), color: .yellow)
+                        ResourceBadge(icon: "star.fill", value: gameVM.stardust, color: .yellow)
                         Spacer()
                         ResourceBadge(icon: "sparkle", value: gameVM.starlightShards, color: .blue)
                         Spacer()
@@ -965,6 +1004,26 @@ struct MergeBoardView: View {
                     }
                     .padding()
                     .background(.ultraThinMaterial)
+
+                    HStack {
+                        Text("\(abbreviatedNumber(gameVM.idleEngine.totalProductionPerSec))/sec")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+
+                        Spacer()
+
+                        Button {
+                            _ = gameVM.summonItem()
+                        } label: {
+                            Label("Summon (\(gameVM.itemSummonCost) gems)", systemImage: "sparkles")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.purple)
+                        .disabled(gameVM.nebulaGems < gameVM.itemSummonCost)
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 4)
 
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 15) {
@@ -1036,16 +1095,57 @@ struct ItemCard: View {
     }
 }
 
+/// Clamps an unbounded idle value into `Int64` range. A raw conversion traps on
+/// overflow or NaN, which is reachable once idle production compounds.
+func clampedScore(_ value: Double) -> Int64 {
+    guard value.isFinite, value > 0 else { return 0 }
+    return Int64(min(value, 9_000_000_000_000_000_000))
+}
+
+/// Formats large idle-game numbers compactly (1.2K, 3.4M, …). Also avoids
+/// converting unbounded `Double`s to `Int`, which traps on overflow or NaN.
+func abbreviatedNumber(_ value: Double) -> String {
+    guard value.isFinite else { return "0" }
+    let magnitude = max(0, value)
+    let units = ["", "K", "M", "B", "T", "Qa", "Qi", "Sx"]
+
+    var scaled = magnitude
+    var unitIndex = 0
+    while scaled >= 1000, unitIndex < units.count - 1 {
+        scaled /= 1000
+        unitIndex += 1
+    }
+
+    if unitIndex == 0 {
+        return String(format: "%.0f", scaled)
+    }
+    return String(format: "%.1f%@", scaled, units[unitIndex])
+}
+
 struct ResourceBadge: View {
     let icon: String
-    let value: Int
+    let value: String
     let color: Color
+
+    init(icon: String, value: String, color: Color) {
+        self.icon = icon
+        self.value = value
+        self.color = color
+    }
+
+    init(icon: String, value: Int, color: Color) {
+        self.init(icon: icon, value: String(value), color: color)
+    }
+
+    init(icon: String, value: Double, color: Color) {
+        self.init(icon: icon, value: abbreviatedNumber(value), color: color)
+    }
 
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: icon)
                 .foregroundColor(color)
-            Text("\(value)")
+            Text(value)
                 .font(.headline)
                 .foregroundColor(.white)
         }
@@ -1064,13 +1164,29 @@ struct GalacticCanvasView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                Color(red: 0.02, green: 0.01, blue: 0.15)
-                    .ignoresSafeArea()
+                CosmicBackground()
 
                 VStack {
                     Text("Your Galaxy")
                         .font(.headline)
                         .foregroundColor(.white)
+
+                    HStack {
+                        ResourceBadge(icon: "sparkle", value: gameVM.starlightShards, color: .blue)
+
+                        Spacer()
+
+                        Button {
+                            _ = gameVM.unlockNextTile()
+                        } label: {
+                            Label("Unlock Tile (\(gameVM.tileUnlockCost))", systemImage: "lock.open.fill")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                        .disabled(gameVM.starlightShards < gameVM.tileUnlockCost)
+                    }
+                    .padding(.horizontal)
 
                     ScrollView([.horizontal, .vertical]) {
                         VStack(spacing: -10) {
