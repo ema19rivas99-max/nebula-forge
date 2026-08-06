@@ -515,7 +515,9 @@ enum Element: String, CaseIterable, Codable {
         switch self {
         case .fire: return .orange
         case .ice: return .cyan
-        case .void: return .indigo
+        // Not `.indigo`: it's within a few shades of the cosmic background and
+        // Void items were effectively invisible on the board.
+        case .void: return Color(red: 0.68, green: 0.48, blue: 1.0)
         case .radiant: return .yellow
         }
     }
@@ -1003,8 +1005,11 @@ class GameViewModel: ObservableObject {
     /// Stardust price of forging a new item. This is the primary sink and the
     /// only renewable source of items — without it the board can only shrink
     /// (merging consumes two to make one) and prestige is unreachable.
+    /// Grows per forge *within a run* so the board can't be filled for free,
+    /// but gently enough that production keeps up. At the old 1.18 the price
+    /// doubled every four forges and outran output within one session.
     var forgeItemCost: Double {
-        25 * pow(1.18, Double(itemsForged)) * forgeCostFactor
+        25 * pow(1.12, Double(itemsForged)) * forgeCostFactor
     }
 
     /// Minimum built-up power before a Supernova is allowed.
@@ -1489,6 +1494,11 @@ class GameViewModel: ObservableObject {
 
         let earnedMarks = potentialMarks
         galaxyMarks += earnedMarks
+
+        // Forge price is per-run. Leaving this as a lifetime counter meant a
+        // Supernova reset the board but kept the exponential price, so each
+        // prestige started strictly poorer than the last.
+        itemsForged = 0
         // Prestiging is the only source of Nebula Gems.
         nebulaGems += earnedMarks * 2
         hasPrestiged = true
@@ -2557,14 +2567,7 @@ struct CelestialItemSprite: View {
     let size: CGFloat
     @State private var pulse = false
 
-    private var baseColor: Color {
-        switch item.element {
-        case .fire: return .orange
-        case .ice: return .cyan
-        case .void: return .indigo
-        case .radiant: return .yellow
-        }
-    }
+    private var baseColor: Color { item.element.tint }
 
     /// Asset name for this element/tier, e.g. `item_fire_t3`.
     private var assetName: String {
@@ -2579,6 +2582,25 @@ struct CelestialItemSprite: View {
 
     var body: some View {
         ZStack {
+            // Every item gets a lit backing, not just high tiers. The artwork is
+            // dark-on-dark against the cosmic background — Void and tier-0 items
+            // were close to invisible without something behind them.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [baseColor.opacity(0.42), baseColor.opacity(0.10), .clear],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: (size + 14) / 2
+                    )
+                )
+                .frame(width: size + 14, height: size + 14)
+
+            // A thin rim gives a hard edge the background can't swallow.
+            Circle()
+                .strokeBorder(baseColor.opacity(0.55), lineWidth: 1)
+                .frame(width: size + 14, height: size + 14)
+
             if item.tier >= 3 {
                 Circle()
                     .fill(baseColor.opacity(0.35))
