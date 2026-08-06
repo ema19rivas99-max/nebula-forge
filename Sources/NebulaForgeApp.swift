@@ -31,10 +31,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // Initialize Game Center
         authenticateGameCenterPlayer()
 
-        // Register for StoreKit transaction updates
-        Task {
-            await listenForTransactions()
-        }
+        // StoreKit transaction updates are observed by IAPManager, which owns
+        // the exactly-once grant bookkeeping. A second listener here meant every
+        // transaction was finished twice.
 
         return true
     }
@@ -56,13 +55,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
-    func listenForTransactions() async {
-        for await result in Transaction.updates {
-            guard case .verified(let transaction) = result else { continue }
-            await transaction.finish()
-            await IAPManager.shared.processTransaction(transaction)
-        }
-    }
 }
 
 // MARK: - Privacy Manager
@@ -257,6 +249,140 @@ extension GameCenterManager: GKGameCenterControllerDelegate {
     }
 }
 
+// MARK: - Store Catalog
+/// What each product actually hands over. Prices live in App Store Connect;
+/// this is only the payload, and every number here is meant to be tuned.
+///
+/// The `kind` must match the product's type in App Store Connect, or StoreKit
+/// and the game will disagree about whether something is re-buyable.
+struct StoreGrant {
+    enum Kind {
+        /// Granted on every purchase (gem packs).
+        case consumable
+        /// Granted once; the multiplier applies for as long as it's owned.
+        case nonConsumable
+        /// Granted again on every renewal; multiplier applies while active.
+        case subscription
+    }
+
+    let gems: Int
+    let shards: Int
+    /// Applied to production for as long as the entitlement is valid.
+    let productionMultiplier: Double
+    let kind: Kind
+}
+
+enum StoreCatalog {
+    static let grants: [String: StoreGrant] = [
+        "nebulaforge.pileofgems": StoreGrant(
+            gems: 500, shards: 0, productionMultiplier: 1.0, kind: .consumable),
+        "nebulaforge.starterpack": StoreGrant(
+            gems: 200, shards: 100, productionMultiplier: 1.25, kind: .nonConsumable),
+        "nebulaforge.architectkit": StoreGrant(
+            gems: 400, shards: 250, productionMultiplier: 1.5, kind: .nonConsumable),
+        "nebulaforge.nebulapass.monthly": StoreGrant(
+            gems: 300, shards: 0, productionMultiplier: 2.0, kind: .subscription),
+        "nebulaforge.gemsubscription.weekly": StoreGrant(
+            gems: 150, shards: 0, productionMultiplier: 1.0, kind: .subscription)
+    ]
+
+    static func grant(for productID: String) -> StoreGrant? { grants[productID] }
+
+    /// Short line describing what a product gives, for the shop row.
+    static func summary(for productID: String) -> String? {
+        guard let grant = grant(for: productID) else { return nil }
+        var parts: [String] = []
+        if grant.gems > 0 { parts.append("\(grant.gems) Gems") }
+        if grant.shards > 0 { parts.append("\(grant.shards) Shards") }
+        if grant.productionMultiplier > 1 {
+            parts.append(String(format: "×%.2g production", grant.productionMultiplier))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Gem Shop
+/// Things bought with Gems rather than money. This is what gives the Shop tab a
+/// reason to exist before any real-money product is approved, and what makes
+/// the gems from prestige and purchases worth having.
+struct GemOffer: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let icon: String
+    let gemCost: Int
+}
+
+enum GemShopCatalog {
+    static let all: [GemOffer] = [
+        GemOffer(id: "forge_bundle", title: "Forge Bundle",
+                 detail: "Five items dropped straight onto the board, free of Stardust.",
+                 icon: "hammer.fill", gemCost: 25),
+        GemOffer(id: "unlock_tile", title: "Expand the Grid",
+                 detail: "Unlock the next tile without spending Shards.",
+                 icon: "lock.open.fill", gemCost: 40),
+        GemOffer(id: "call_comet", title: "Call a Comet",
+                 detail: "Summon a comet immediately, wherever there's room.",
+                 icon: "sparkles", gemCost: 15),
+        GemOffer(id: "surge", title: "Stellar Surge",
+                 detail: "Double production for thirty minutes.",
+                 icon: "bolt.fill", gemCost: 60)
+    ]
+}
+
+// MARK: - Cosmetics
+/// Board themes. Deliberately palette-only — they change how the galaxy reads
+/// without needing any new artwork, so they can ship today.
+struct CosmeticTheme: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    let gemCost: Int
+    let background: [Color]
+    let tileFill: [Color]
+    let accent: Color
+    let starTint: Color
+}
+
+enum CosmeticCatalog {
+    static let all: [CosmeticTheme] = [
+        CosmeticTheme(
+            id: "deep_void", name: "Deep Void",
+            detail: "The original dark.", gemCost: 0,
+            background: [Color(red: 0.02, green: 0.01, blue: 0.15),
+                         Color(red: 0.05, green: 0.02, blue: 0.30)],
+            tileFill: [Color.blue.opacity(0.15), Color.purple.opacity(0.10)],
+            accent: .purple, starTint: .white),
+        CosmeticTheme(
+            id: "crimson", name: "Crimson Nebula",
+            detail: "A galaxy lit by dying stars.", gemCost: 150,
+            background: [Color(red: 0.14, green: 0.02, blue: 0.08),
+                         Color(red: 0.30, green: 0.04, blue: 0.12)],
+            tileFill: [Color.red.opacity(0.16), Color.orange.opacity(0.10)],
+            accent: .orange, starTint: Color(red: 1.0, green: 0.88, blue: 0.80)),
+        CosmeticTheme(
+            id: "aurora", name: "Aurora Drift",
+            detail: "Cold light over a green horizon.", gemCost: 250,
+            background: [Color(red: 0.01, green: 0.12, blue: 0.13),
+                         Color(red: 0.03, green: 0.26, blue: 0.24)],
+            tileFill: [Color.teal.opacity(0.18), Color.green.opacity(0.10)],
+            accent: .teal, starTint: Color(red: 0.85, green: 1.0, blue: 0.95)),
+        CosmeticTheme(
+            id: "gilded", name: "Golden Expanse",
+            detail: "For a galaxy that has clearly done well.", gemCost: 400,
+            background: [Color(red: 0.13, green: 0.09, blue: 0.01),
+                         Color(red: 0.28, green: 0.20, blue: 0.03)],
+            tileFill: [Color.yellow.opacity(0.16), Color.orange.opacity(0.10)],
+            accent: .yellow, starTint: Color(red: 1.0, green: 0.97, blue: 0.82))
+    ]
+
+    static let defaultID = "deep_void"
+
+    static func theme(for id: String) -> CosmeticTheme {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
 // MARK: - StoreKit IAP Manager
 @MainActor
 class IAPManager: ObservableObject {
@@ -264,22 +390,29 @@ class IAPManager: ObservableObject {
 
     @Published var products: [Product] = []
     @Published var purchasedProductIDs = Set<String>()
+    /// Set when loading finds none of the products, which in practice means
+    /// they haven't been created in App Store Connect yet.
+    @Published var loadFailed = false
 
-    let productIDs = [
-        "nebulaforge.starterpack",
-        "nebulaforge.architectkit",
-        "nebulaforge.pileofgems",
-        "nebulaforge.nebulapass.monthly",
-        "nebulaforge.gemsubscription.weekly"
-    ]
+    let productIDs = Array(StoreCatalog.grants.keys)
+
+    /// The game receives the goods. Weak so the singleton can't keep a dead
+    /// view model alive.
+    private weak var game: GameViewModel?
 
     private var updates: Task<Void, Never>? = nil
+
+    /// Transactions already paid out. Persisted, because a grant must happen
+    /// exactly once and StoreKit will happily replay a transaction.
+    private static let processedKey = "nf.processedTransactions"
+    private var processedTransactionIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: IAPManager.processedKey) ?? [])
 
     init() {
         updates = observeTransactionUpdates()
         Task {
             await loadProducts()
-            await updatePurchasedProducts()
+            await refreshEntitlements()
         }
     }
 
@@ -287,11 +420,19 @@ class IAPManager: ObservableObject {
         updates?.cancel()
     }
 
+    func attach(_ game: GameViewModel) {
+        self.game = game
+        Task { await refreshEntitlements() }
+    }
+
     func loadProducts() async {
         do {
-            products = try await Product.products(for: productIDs)
+            let loaded = try await Product.products(for: productIDs)
+            products = loaded.sorted { $0.price < $1.price }
+            loadFailed = loaded.isEmpty
         } catch {
             print("Failed to load products: \(error)")
+            loadFailed = true
         }
     }
 
@@ -300,34 +441,70 @@ class IAPManager: ObservableObject {
         switch result {
         case .success(let verification):
             guard case .verified(let transaction) = verification else { return }
+            applyGrant(for: transaction)
             await transaction.finish()
-            await updatePurchasedProducts()
-        case .userCancelled:
-            break
-        case .pending:
+            await refreshEntitlements()
+        case .userCancelled, .pending:
             break
         @unknown default:
             break
         }
     }
 
-    func processTransaction(_ transaction: StoreKit.Transaction) async {
-        purchasedProductIDs.insert(transaction.productID)
+    /// Required by App Review for anything non-consumable.
+    func restorePurchases() async {
+        try? await AppStore.sync()
+        await refreshEntitlements()
     }
 
-    func updatePurchasedProducts() async {
+    /// Pays out a transaction exactly once.
+    ///
+    /// Currency is only ever granted from *new* transactions — never from
+    /// `currentEntitlements`, which replays every past purchase and would hand
+    /// out the gems again on every launch.
+    private func applyGrant(for transaction: StoreKit.Transaction) {
+        let key = String(transaction.id)
+        guard !processedTransactionIDs.contains(key),
+              let grant = StoreCatalog.grant(for: transaction.productID) else { return }
+
+        processedTransactionIDs.insert(key)
+        UserDefaults.standard.set(Array(processedTransactionIDs), forKey: Self.processedKey)
+
+        game?.applyStoreGrant(grant, productID: transaction.productID)
+    }
+
+    /// Recomputes owned products and the purchased production multiplier from
+    /// what is currently valid. Rebuilt from scratch each time rather than
+    /// accumulated, so a lapsed subscription actually stops applying.
+    func refreshEntitlements() async {
+        var owned = Set<String>()
+        var multiplier = 1.0
+
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
-            purchasedProductIDs.insert(transaction.productID)
+            if let expiry = transaction.expirationDate, expiry < Date() { continue }
+            if transaction.revocationDate != nil { continue }
+
+            owned.insert(transaction.productID)
+            if let grant = StoreCatalog.grant(for: transaction.productID) {
+                multiplier *= grant.productionMultiplier
+            }
         }
+
+        purchasedProductIDs = owned
+        game?.setPurchaseMultiplier(multiplier)
     }
 
+    /// The single listener for the transaction stream. `AppDelegate` used to run
+    /// a second one over the same sequence, so every transaction was finished
+    /// twice.
     private func observeTransactionUpdates() -> Task<Void, Never> {
-        Task {
-            for await result in Transaction.updates {
+        Task { @MainActor [weak self] in
+            for await result in StoreKit.Transaction.updates {
                 guard case .verified(let transaction) = result else { continue }
+                self?.applyGrant(for: transaction)
                 await transaction.finish()
-                purchasedProductIDs.insert(transaction.productID)
+                await self?.refreshEntitlements()
             }
         }
     }
@@ -978,8 +1155,33 @@ class GameViewModel: ObservableObject {
 
     // Starts now rather than in the distant past, so the first comet arrives a
     // few minutes in instead of landing on top of the tutorial.
+    /// Production multiplier from real-money entitlements. Recomputed from live
+    /// entitlements on every launch rather than saved, so a lapsed subscription
+    /// genuinely stops paying out.
+    @Published var purchaseMultiplier: Double = 1.0
+    /// End of a Stellar Surge, if one is running.
+    @Published var surgeEndsAt: Date?
+
+    @Published var ownedThemeIDs: Set<String> = [CosmeticCatalog.defaultID]
+    @Published var selectedThemeID: String = CosmeticCatalog.defaultID
+
+    var theme: CosmeticTheme { CosmeticCatalog.theme(for: selectedThemeID) }
+
+    /// 2x while a surge is running, 1x otherwise.
+    var surgeMultiplier: Double {
+        guard let surgeEndsAt, surgeEndsAt > Date() else { return 1.0 }
+        return 2.0
+    }
+
+    var surgeSecondsRemaining: Int {
+        guard let surgeEndsAt else { return 0 }
+        return max(0, Int(surgeEndsAt.timeIntervalSinceNow))
+    }
+
     private var lastCometSpawn: Date = Date()
     private var lastDailyClaim: Date?
+    /// Tracks the surge so its expiry can trigger exactly one resync.
+    private var surgeWasActive = false
     @Published var hasSeenTutorial: Bool = UserDefaults.standard.bool(forKey: "nf.hasSeenTutorial") {
         didSet { UserDefaults.standard.set(hasSeenTutorial, forKey: "nf.hasSeenTutorial") }
     }
@@ -1056,6 +1258,9 @@ class GameViewModel: ObservableObject {
         static let lastSaveDate = "nf.lastSaveDate"
         static let dailyStreak = "nf.dailyStreak"
         static let lastDailyClaim = "nf.lastDailyClaim"
+        static let surgeEndsAt = "nf.surgeEndsAt"
+        static let ownedThemes = "nf.ownedThemes"
+        static let selectedTheme = "nf.selectedTheme"
     }
 
     init() {
@@ -1075,8 +1280,22 @@ class GameViewModel: ObservableObject {
             guard let self = self else { return }
             self.stardust += produced
             self.tickComet()
+            self.tickSurge()
         }
         idleEngine.start()
+    }
+
+    /// Drops production back when a Stellar Surge runs out. Guarded so the
+    /// resync happens once rather than on every tick.
+    private func tickSurge() {
+        let active = surgeMultiplier > 1
+        guard surgeWasActive, !active else {
+            surgeWasActive = active
+            return
+        }
+        surgeWasActive = false
+        surgeEndsAt = nil
+        syncUpgradeEffects()
     }
 
     /// Spawns and expires the comet off the existing idle tick, so there's no
@@ -1252,20 +1471,26 @@ class GameViewModel: ObservableObject {
         HapticManager.shared.mergeSuccess()
     }
 
-    /// Spends Starlight Shards to unlock the next locked tile, nearest first.
+    /// Unlocks the nearest locked tile. False when the grid is fully open.
     @discardableResult
-    func unlockNextTile() -> Bool {
-        guard starlightShards >= tileUnlockCost else { return false }
+    private func unlockFirstLockedTile() -> Bool {
         for row in gridTiles.indices {
             for col in gridTiles[row].indices where !gridTiles[row][col].isUnlocked {
-                starlightShards -= tileUnlockCost
                 gridTiles[row][col].isUnlocked = true
-                HapticManager.shared.itemPlace()
-                saveGameState()
                 return true
             }
         }
         return false
+    }
+
+    /// Spends Starlight Shards to unlock the next locked tile, nearest first.
+    @discardableResult
+    func unlockNextTile() -> Bool {
+        guard starlightShards >= tileUnlockCost, unlockFirstLockedTile() else { return false }
+        starlightShards -= tileUnlockCost
+        HapticManager.shared.itemPlace()
+        saveGameState()
+        return true
     }
 
     /// A fresh tier-0 item. Common chains are weighted higher so early boards
@@ -1376,11 +1601,93 @@ class GameViewModel: ObservableObject {
         }
     }
 
-    /// Pushes upgrade-derived values into the idle engine and recomputes output.
-    /// Must run after any change to `upgradeLevels`, including on load.
+    /// Pushes every non-prestige multiplier into the idle engine and recomputes
+    /// output. Must run after any change to `upgradeLevels`, purchases, or the
+    /// surge — including on load.
     func syncUpgradeEffects() {
-        idleEngine.upgradeMultiplier = upgradeProductionMultiplier
+        idleEngine.upgradeMultiplier =
+            upgradeProductionMultiplier * purchaseMultiplier * surgeMultiplier
         idleEngine.recalculate(from: gridTiles)
+    }
+
+    // MARK: Purchases
+
+    /// Hands over what a real-money product bought. Called once per transaction
+    /// by `IAPManager`, which owns the exactly-once bookkeeping.
+    func applyStoreGrant(_ grant: StoreGrant, productID: String) {
+        nebulaGems += grant.gems
+        starlightShards += grant.shards
+        if grant.gems > 0 || grant.shards > 0 {
+            announceMerge("Purchase   +\(grant.gems) Gems")
+        }
+        HapticManager.shared.supernova()
+        saveGameState()
+    }
+
+    func setPurchaseMultiplier(_ value: Double) {
+        guard value != purchaseMultiplier else { return }
+        purchaseMultiplier = value
+        syncUpgradeEffects()
+    }
+
+    // MARK: Gem shop
+
+    @discardableResult
+    func buy(_ offer: GemOffer) -> Bool {
+        guard nebulaGems >= offer.gemCost else { return false }
+
+        // Anything that can't be delivered mustn't take the gems.
+        switch offer.id {
+        case "forge_bundle":
+            guard !freeUnlockedTiles.isEmpty else { return false }
+            for _ in 0..<5 { spawnOnBoard(randomStarterItem()) }
+        case "unlock_tile":
+            guard unlockFirstLockedTile() else { return false }
+        case "call_comet":
+            guard comet == nil, let tile = freeUnlockedTiles.randomElement() else { return false }
+            let payout = max(25, idleEngine.totalProductionPerSec * 90)
+            comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
+                          lifetime: Self.cometLifetime, stardust: payout, shards: 3)
+        case "surge":
+            // Extends rather than replaces, so buying two isn't a waste.
+            let base = max(Date(), surgeEndsAt ?? Date())
+            surgeEndsAt = base.addingTimeInterval(30 * 60)
+            surgeWasActive = true
+        default:
+            return false
+        }
+
+        nebulaGems -= offer.gemCost
+        syncUpgradeEffects()
+        HapticManager.shared.mergeSuccess()
+        saveGameState()
+        return true
+    }
+
+    // MARK: Cosmetics
+
+    func owns(_ theme: CosmeticTheme) -> Bool {
+        theme.gemCost == 0 || ownedThemeIDs.contains(theme.id)
+    }
+
+    @discardableResult
+    func purchaseTheme(_ theme: CosmeticTheme) -> Bool {
+        guard !owns(theme), nebulaGems >= theme.gemCost else { return false }
+        nebulaGems -= theme.gemCost
+        ownedThemeIDs.insert(theme.id)
+        selectedThemeID = theme.id
+        HapticManager.shared.supernova()
+        saveGameState()
+        return true
+    }
+
+    @discardableResult
+    func selectTheme(_ theme: CosmeticTheme) -> Bool {
+        guard owns(theme) else { return false }
+        selectedThemeID = theme.id
+        HapticManager.shared.itemPlace()
+        saveGameState()
+        return true
     }
 
     /// Goals finished but not yet collected.
@@ -1542,6 +1849,15 @@ class GameViewModel: ObservableObject {
         if let lastDailyClaim {
             defaults.set(lastDailyClaim, forKey: DefaultsKey.lastDailyClaim)
         }
+        defaults.set(Array(ownedThemeIDs), forKey: DefaultsKey.ownedThemes)
+        defaults.set(selectedThemeID, forKey: DefaultsKey.selectedTheme)
+        // A surge is wall-clock time the player paid for, so it keeps running
+        // while the app is closed rather than pausing.
+        if let surgeEndsAt {
+            defaults.set(surgeEndsAt, forKey: DefaultsKey.surgeEndsAt)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.surgeEndsAt)
+        }
 
         // Tiles can be unlocked by spending shards, so the unlocked set has to
         // be stored rather than recomputed from prestige state alone.
@@ -1616,6 +1932,17 @@ class GameViewModel: ObservableObject {
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
         dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
         lastDailyClaim = defaults.object(forKey: DefaultsKey.lastDailyClaim) as? Date
+
+        let saved = Set(defaults.stringArray(forKey: DefaultsKey.ownedThemes) ?? [])
+        ownedThemeIDs = saved.union([CosmeticCatalog.defaultID])
+        let savedTheme = defaults.string(forKey: DefaultsKey.selectedTheme) ?? CosmeticCatalog.defaultID
+        // Don't leave the board wearing a theme the player doesn't own.
+        selectedThemeID = ownedThemeIDs.contains(savedTheme) ? savedTheme : CosmeticCatalog.defaultID
+
+        if let end = defaults.object(forKey: DefaultsKey.surgeEndsAt) as? Date, end > Date() {
+            surgeEndsAt = end
+            surgeWasActive = true
+        }
 
         // Saves written before tile unlocking existed have no stored set, so
         // fall back to deriving it from prestige state.
@@ -1755,6 +2082,9 @@ struct ContentView: View {
             DailyRewardView()
         }
         .onAppear {
+            // Wire the store to the game here rather than in ShopView, so
+            // subscription multipliers apply even if the player never opens it.
+            IAPManager.shared.attach(gameVM)
             showNextPrompt()
         }
     }
@@ -2318,10 +2648,11 @@ struct GalacticCanvasView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                CosmicBackground()
+                CosmicBackground(theme: gameVM.theme)
 
                 VStack(spacing: 8) {
                     resourceBar
+                    surgeBanner
                     actionBar
                     hintLine
 
@@ -2421,6 +2752,22 @@ struct GalacticCanvasView: View {
         .padding(.horizontal)
     }
 
+    @ViewBuilder
+    private var surgeBanner: some View {
+        if gameVM.surgeMultiplier > 1 {
+            let secs = gameVM.surgeSecondsRemaining
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.fill")
+                Text("Stellar Surge ×2 — \(secs / 60)m \(secs % 60)s")
+                    .font(.caption.bold())
+            }
+            .foregroundColor(.black)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.yellow))
+        }
+    }
+
     private var hintLine: some View {
         Text(blockReason ?? gameVM.nextStepHint)
             .font(.caption)
@@ -2456,6 +2803,7 @@ struct GalacticCanvasView: View {
             isPlacementTarget: selectedTrayItemID != nil && tile.isUnlocked && tile.placedItem == nil,
             comet: gameVM.isCometTile(tile) ? gameVM.comet : nil,
             output: output,
+            tileFill: gameVM.theme.tileFill,
             onTap: { handleTap(row: row, col: col) }
         )
     }
@@ -2644,6 +2992,7 @@ struct HexTileView: View {
     let isPlacementTarget: Bool
     let comet: Comet?
     let output: Double
+    var tileFill: [Color] = [Color.blue.opacity(0.15), Color.purple.opacity(0.10)]
     let onTap: () -> Void
 
     private var strokeColor: Color {
@@ -2668,7 +3017,7 @@ struct HexTileView: View {
                         tile.isUnlocked
                         ? AnyShapeStyle(
                             LinearGradient(
-                                colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                                colors: tileFill,
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -2802,6 +3151,9 @@ struct SupernovaEffect: View {
 
 // MARK: - Cosmic Background
 struct CosmicBackground: View {
+    /// Optional so sheets and previews that have no view model still render.
+    var theme: CosmeticTheme = CosmeticCatalog.theme(for: CosmeticCatalog.defaultID)
+
     // Generated once so the starfield doesn't reshuffle every frame.
     private let stars: [(x: CGFloat, y: CGFloat, r: CGFloat, opacity: Double)] = (0..<80).map { _ in
         (
@@ -2817,10 +3169,7 @@ struct CosmicBackground: View {
             context.fill(
                 Path(CGRect(origin: .zero, size: size)),
                 with: .linearGradient(
-                    Gradient(colors: [
-                        Color(red: 0.02, green: 0.01, blue: 0.15),
-                        Color(red: 0.05, green: 0.02, blue: 0.3)
-                    ]),
+                    Gradient(colors: theme.background),
                     startPoint: .zero,
                     endPoint: CGPoint(x: size.width, y: size.height)
                 )
@@ -2834,7 +3183,7 @@ struct CosmicBackground: View {
                         width: star.r,
                         height: star.r
                     )),
-                    with: .color(.white.opacity(star.opacity))
+                    with: .color(theme.starTint.opacity(star.opacity))
                 )
             }
         }
@@ -2970,62 +3319,222 @@ struct PrestigeView: View {
 }
 
 // MARK: - Shop View
+/// Three shelves: Gems for money, boosts for Gems, and cosmetics for Gems. The
+/// last two work with no App Store Connect products at all, so the tab is never
+/// empty while real-money products are still in review.
 struct ShopView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @StateObject private var iapManager = IAPManager.shared
+    @State private var shelf: Shelf = .boosts
+
+    /// Named `Shelf` rather than `Section` so it doesn't shadow SwiftUI's own
+    /// `Section` inside this view.
+    enum Shelf: String, CaseIterable, Identifiable {
+        case boosts = "Boosts"
+        case cosmetics = "Themes"
+        case gems = "Gems"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationView {
             ZStack {
-                CosmicBackground()
+                CosmicBackground(theme: gameVM.theme)
 
-                ScrollView {
-                    VStack(spacing: 20) {
-                        Text("Nebula Store")
-                            .font(.title.bold())
+                VStack(spacing: 12) {
+                    HStack {
+                        Image(systemName: "diamond.fill")
+                            .foregroundColor(.purple)
+                        Text("\(gameVM.nebulaGems) Gems")
+                            .font(.headline)
                             .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(15)
 
-                        // Gems display
-                        HStack {
-                            Image(systemName: "diamond.fill")
-                                .foregroundColor(.purple)
-                            Text("\(gameVM.nebulaGems) Gems")
-                                .font(.headline)
-                                .foregroundColor(.white)
+                    Picker("Shelf", selection: $shelf) {
+                        ForEach(Shelf.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            switch shelf {
+                            case .boosts: boostShelf
+                            case .cosmetics: cosmeticShelf
+                            case .gems: gemShelf
+                            }
                         }
                         .padding()
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(15)
-
-                        if iapManager.products.isEmpty {
-                            VStack(spacing: 12) {
-                                Image(systemName: "shippingbox.fill")
-                                    .font(.system(size: 40))
-                                    .foregroundColor(.purple.opacity(0.7))
-                                Text("Store opening soon")
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                Text("Gems can already be earned free by triggering a Supernova on the Nova tab.")
-                                    .font(.caption)
-                                    .foregroundColor(.white.opacity(0.7))
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 30)
-                            }
-                            .padding(.vertical, 40)
-                        } else {
-                            ForEach(iapManager.products, id: \.id) { product in
-                                ShopProductRow(product: product, iapManager: iapManager)
-                            }
-                        }
                     }
-                    .padding()
                 }
             }
-            .navigationTitle("Shop")
+            .navigationTitle("Nebula Store")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .task {
+            IAPManager.shared.attach(gameVM)
             await iapManager.loadProducts()
         }
+    }
+
+    private var boostShelf: some View {
+        ForEach(GemShopCatalog.all) { offer in
+            GemOfferRow(offer: offer)
+        }
+    }
+
+    private var cosmeticShelf: some View {
+        ForEach(CosmeticCatalog.all) { theme in
+            ThemeRow(theme: theme)
+        }
+    }
+
+    @ViewBuilder
+    private var gemShelf: some View {
+        if iapManager.products.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.purple.opacity(0.7))
+                Text("No products available")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Text("These appear once the in-app purchases are created in App Store Connect. Gems can already be earned free by triggering a Supernova.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+            .padding(.vertical, 40)
+        } else {
+            ForEach(iapManager.products, id: \.id) { product in
+                ShopProductRow(product: product, iapManager: iapManager)
+            }
+        }
+
+        // App Review requires a restore path for anything non-consumable.
+        Button {
+            Task { await iapManager.restorePurchases() }
+        } label: {
+            Text("Restore Purchases")
+                .font(.caption)
+                .underline()
+                .foregroundColor(.blue)
+        }
+        .padding(.top, 8)
+    }
+}
+
+struct GemOfferRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let offer: GemOffer
+
+    private var affordable: Bool { gameVM.nebulaGems >= offer.gemCost }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: offer.icon)
+                .font(.title2)
+                .foregroundColor(.yellow)
+                .frame(width: 32)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(offer.title)
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                Text(offer.detail)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            Button {
+                gameVM.buy(offer)
+            } label: {
+                Label("\(offer.gemCost)", systemImage: "diamond.fill")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .disabled(!affordable)
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(14)
+    }
+}
+
+struct ThemeRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let theme: CosmeticTheme
+
+    private var owned: Bool { gameVM.owns(theme) }
+    private var selected: Bool { gameVM.selectedThemeID == theme.id }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            // A live swatch of the actual palette, so the price buys something
+            // the player has already seen.
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(LinearGradient(colors: theme.background,
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                HexagonShape()
+                    .fill(LinearGradient(colors: theme.tileFill,
+                                         startPoint: .top, endPoint: .bottom))
+                    .frame(width: 26, height: 30)
+                Circle()
+                    .fill(theme.starTint)
+                    .frame(width: 3, height: 3)
+                    .offset(x: -14, y: -10)
+            }
+            .frame(width: 54, height: 54)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(selected ? Color.yellow : Color.white.opacity(0.2),
+                            lineWidth: selected ? 2.5 : 1)
+            )
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(theme.name)
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                Text(theme.detail)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            if selected {
+                Text("Active")
+                    .font(.caption.bold())
+                    .foregroundColor(.green)
+            } else if owned {
+                Button("Use") { gameVM.selectTheme(theme) }
+                    .buttonStyle(.bordered)
+                    .tint(.blue)
+                    .font(.caption)
+            } else {
+                Button {
+                    gameVM.purchaseTheme(theme)
+                } label: {
+                    Label("\(theme.gemCost)", systemImage: "diamond.fill")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .disabled(gameVM.nebulaGems < theme.gemCost)
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(14)
     }
 }
 
@@ -3033,31 +3542,44 @@ struct ShopProductRow: View {
     let product: Product
     @ObservedObject var iapManager: IAPManager
 
+    private var owned: Bool { iapManager.purchasedProductIDs.contains(product.id) }
+
     var body: some View {
         HStack {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(product.displayName)
                     .font(.headline)
                     .foregroundColor(.white)
                 Text(product.description)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.7))
+                // What the game actually hands over, which the App Store
+                // description can drift away from.
+                if let summary = StoreCatalog.summary(for: product.id) {
+                    Text(summary)
+                        .font(.caption2.bold())
+                        .foregroundColor(.yellow)
+                }
             }
 
             Spacer()
 
-            Button(action: {
-                Task {
-                    try? await iapManager.purchase(product)
+            if owned {
+                Text("Owned")
+                    .font(.caption.bold())
+                    .foregroundColor(.green)
+            } else {
+                Button {
+                    Task { try? await iapManager.purchase(product) }
+                } label: {
+                    Text(product.displayPrice)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Color.purple)
+                        .cornerRadius(10)
                 }
-            }) {
-                Text(product.displayPrice)
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background(Color.purple)
-                    .cornerRadius(10)
             }
         }
         .padding()
