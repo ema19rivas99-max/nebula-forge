@@ -440,23 +440,36 @@ struct CelestialItem: Identifiable, Codable {
         try container.encode(name, forKey: .name)
     }
 
+    /// Two items combine one of two ways: same chain tiers up, two *different*
+    /// chains fuse into a hybrid at the same tier (see `FusionCatalog`).
     static func merge(item1: CelestialItem, item2: CelestialItem) -> CelestialItem? {
-        guard item1.chainID == item2.chainID, item1.tier == item2.tier else { return nil }
-        guard let chain = ItemCatalog.chain(for: item1.chainID) else { return nil }
+        guard item1.tier == item2.tier else { return nil }
 
-        let nextTier = item1.tier + 1
-        // The chain tops out; merging past its final form isn't possible.
-        guard nextTier < chain.tierNames.count else { return nil }
+        if item1.chainID == item2.chainID {
+            guard let chain = ItemCatalog.chain(for: item1.chainID) else { return nil }
 
-        return CelestialItem(
-            id: UUID(),
-            chainID: chain.id,
-            tier: nextTier,
-            element: chain.element,
-            baseProduction: chain.production(atTier: nextTier),
-            name: chain.tierNames[nextTier],
-            position: nil
-        )
+            let nextTier = item1.tier + 1
+            // The chain tops out; merging past its final form isn't possible.
+            guard nextTier < chain.tierNames.count else { return nil }
+
+            return ItemCatalog.makeItem(chainID: chain.id, tier: nextTier)
+        }
+
+        guard let recipe = FusionCatalog.recipe(for: item1.chainID, item2.chainID),
+              item1.tier >= recipe.minTier else { return nil }
+        return ItemCatalog.makeItem(chainID: recipe.outputChainID, tier: item1.tier)
+    }
+
+    /// Why a given pair can't combine, for surfacing in the UI instead of a
+    /// silent no-op.
+    static func mergeBlockReason(item1: CelestialItem, item2: CelestialItem) -> String? {
+        if merge(item1: item1, item2: item2) != nil { return nil }
+        if item1.tier != item2.tier { return "Tiers must match" }
+        if item1.chainID == item2.chainID { return "\(item1.name) is fully evolved" }
+        guard let recipe = FusionCatalog.recipe(for: item1.chainID, item2.chainID) else {
+            return "These elements can't fuse"
+        }
+        return "Fusion needs tier \(recipe.minTier) or higher"
     }
 
     /// Whether this item has reached the end of its chain.
@@ -475,6 +488,35 @@ enum Element: String, CaseIterable, Codable {
         case .ice: return "Ice"
         case .void: return "Void"
         case .radiant: return "Radiant"
+        }
+    }
+
+    /// Each element earns its output a different way, so where you put a thing
+    /// matters as much as what it is.
+    var roleName: String {
+        switch self {
+        case .fire: return "Ignition"
+        case .ice: return "Lattice"
+        case .void: return "Devour"
+        case .radiant: return "Beacon"
+        }
+    }
+
+    var roleDetail: String {
+        switch self {
+        case .fire: return "+25% for every adjacent Fire. Clusters hard."
+        case .ice: return "+8% for every adjacent item, any element. Likes crowds."
+        case .void: return "+50% per neighbour, but drains each of them by 15%."
+        case .radiant: return "Produces little alone. Gives every neighbour +20%."
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .fire: return .orange
+        case .ice: return .cyan
+        case .void: return .indigo
+        case .radiant: return .yellow
         }
     }
 }
@@ -504,17 +546,20 @@ enum GoalCatalog {
     static let all: [Goal] = [
         Goal(id: "merge_1", title: "First Fusion", detail: "Merge two items together",
              target: 1, shardReward: 3, gemReward: 0) { $0.totalMerges },
-        Goal(id: "place_5", title: "Taking Shape", detail: "Place 5 items in your galaxy",
-             target: 5, shardReward: 5, gemReward: 0) { vm in
-                 vm.gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count },
+        Goal(id: "place_5", title: "Taking Shape", detail: "Have 5 items on the board at once",
+             target: 5, shardReward: 5, gemReward: 0) { $0.placedCount },
         Goal(id: "merge_10", title: "Forge Master", detail: "Complete 10 merges",
              target: 10, shardReward: 10, gemReward: 1) { $0.totalMerges },
         Goal(id: "tier_3", title: "Rising Power", detail: "Create a tier 3 item",
              target: 1, shardReward: 15, gemReward: 2) { vm in
                  vm.highestTierReached >= 3 ? 1 : 0 },
-        Goal(id: "place_10", title: "Constellation", detail: "Place 10 items at once",
-             target: 10, shardReward: 20, gemReward: 2) { vm in
-                 vm.gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count },
+        Goal(id: "fusion_1", title: "Crossed Streams",
+             detail: "Fuse two different elements into a hybrid",
+             target: 1, shardReward: 30, gemReward: 4) { min($0.totalFusions, 1) },
+        Goal(id: "place_10", title: "Constellation", detail: "Have 10 items on the board at once",
+             target: 10, shardReward: 20, gemReward: 2) { $0.placedCount },
+        Goal(id: "streak_3", title: "Regular Orbit", detail: "Collect the daily reward 3 days running",
+             target: 3, shardReward: 25, gemReward: 5) { $0.dailyStreak },
         Goal(id: "prestige_1", title: "Reborn", detail: "Trigger your first Supernova",
              target: 1, shardReward: 25, gemReward: 5) { $0.galaxyMarks > 0 ? 1 : 0 },
         Goal(id: "tier_5", title: "Stellar Architect", detail: "Create a tier 5 item",
@@ -572,10 +617,60 @@ struct ItemChain {
     let element: Element
     let baseProduction: Double
     let tierNames: [String]
+    /// Hybrids can't be forged or summoned — the only way in is fusing two
+    /// different basic chains, which is what makes them worth chasing.
+    let isHybrid: Bool
+
+    init(id: String, element: Element, baseProduction: Double,
+         tierNames: [String], isHybrid: Bool = false) {
+        self.id = id
+        self.element = element
+        self.baseProduction = baseProduction
+        self.tierNames = tierNames
+        self.isHybrid = isHybrid
+    }
 
     /// Production triples with each tier, matching the old merge maths.
     func production(atTier tier: Int) -> Double {
         baseProduction * pow(3.0, Double(tier))
+    }
+}
+
+// MARK: - Fusion Recipes
+/// Combining two *different* chains of the same tier yields a hybrid at that
+/// same tier. A hybrid's much higher base production makes fusing worth more
+/// than the ordinary tier-up you gave up to do it.
+struct FusionRecipe {
+    let inputs: Set<String>
+    let outputChainID: String
+    let minTier: Int
+}
+
+enum FusionCatalog {
+    /// Fusion unlocks partway up a chain so it stays a mid-game goal rather
+    /// than something the player trips over on turn one.
+    static let minTier = 3
+
+    static let all: [FusionRecipe] = [
+        FusionRecipe(inputs: ["fire_basic", "ice_basic"],
+                     outputChainID: "tempest_hybrid", minTier: minTier),
+        FusionRecipe(inputs: ["fire_basic", "void_basic"],
+                     outputChainID: "infernal_hybrid", minTier: minTier),
+        FusionRecipe(inputs: ["ice_basic", "radiant_basic"],
+                     outputChainID: "aurora_hybrid", minTier: minTier),
+        FusionRecipe(inputs: ["void_basic", "radiant_basic"],
+                     outputChainID: "eclipse_hybrid", minTier: minTier)
+    ]
+
+    static func recipe(for a: String, _ b: String) -> FusionRecipe? {
+        guard a != b else { return nil }
+        let pair: Set<String> = [a, b]
+        return all.first { $0.inputs == pair }
+    }
+
+    /// Recipes involving `chainID`, for showing the player what a chain leads to.
+    static func recipes(involving chainID: String) -> [FusionRecipe] {
+        all.filter { $0.inputs.contains(chainID) }
     }
 }
 
@@ -605,9 +700,46 @@ enum ItemCatalog {
         ItemChain(
             id: "radiant_basic",
             element: .radiant,
-            baseProduction: 2.0,
+            // Deliberately the weakest solo producer — Radiant pays out through
+            // the neighbours it buffs, not through itself.
+            baseProduction: 1.2,
             tierNames: ["Sunmote", "Gleam", "Prism", "Radiant Core",
                         "Starlight", "Quasar", "Pulsar", "Lumen Eternal"]
+        ),
+
+        // Hybrids. Only tiers at or above FusionCatalog.minTier are reachable,
+        // but the lower names exist so tier indexing stays uniform.
+        ItemChain(
+            id: "tempest_hybrid",
+            element: .ice,
+            baseProduction: 4.0,
+            tierNames: ["Squall", "Sleet", "Hailstorm", "Tempest",
+                        "Cyclone", "Maelstrom", "Stormcrown", "Eye of Winter"],
+            isHybrid: true
+        ),
+        ItemChain(
+            id: "infernal_hybrid",
+            element: .fire,
+            baseProduction: 4.5,
+            tierNames: ["Scorch", "Blacksoot", "Pyre", "Infernal Rift",
+                        "Hellforge", "Nova Heart", "Cinder Throne", "Ashen God"],
+            isHybrid: true
+        ),
+        ItemChain(
+            id: "aurora_hybrid",
+            element: .radiant,
+            baseProduction: 5.0,
+            tierNames: ["Shimmer", "Veil", "Corona Veil", "Aurora",
+                        "Polar Crown", "Spectrum", "Lightfall", "Firmament"],
+            isHybrid: true
+        ),
+        ItemChain(
+            id: "eclipse_hybrid",
+            element: .void,
+            baseProduction: 6.0,
+            tierNames: ["Umbra", "Penumbra", "Shadowlight", "Eclipse",
+                        "Black Sun", "Devourer", "Endless Night", "Final Dark"],
+            isHybrid: true
         )
     ]
 
@@ -665,17 +797,67 @@ class IdleEngine: ObservableObject {
     func recalculate(from grid: [[GridTile]]) {
         var base = 0.0
         for row in grid {
-            for tile in row {
-                guard let item = tile.placedItem else { continue }
-                // Neighbouring items of the same element reinforce each other.
-                let sameElementNeighbours = neighbours(of: tile, in: grid)
-                    .filter { $0.element == item.element }
-                    .count
-                base += item.baseProduction * (1.0 + 0.15 * Double(sameElementNeighbours))
+            for tile in row where tile.placedItem != nil {
+                base += production(for: tile, in: grid).total
             }
         }
         totalProductionPerSec = base * permanentMultiplier * upgradeMultiplier
     }
+
+    /// Full breakdown of one tile's output, so the board can show the player
+    /// exactly what a placement is worth before they commit to it.
+    func production(for tile: GridTile, in grid: [[GridTile]]) -> TileProduction {
+        guard let item = tile.placedItem else {
+            return TileProduction(base: 0, selfBonus: 1, neighbourBonus: 1, notes: [])
+        }
+
+        let adjacent = neighbours(of: tile, in: grid)
+        var notes: [String] = []
+
+        // What this item's own element does with the company it keeps.
+        var selfBonus = 1.0
+        switch item.element {
+        case .fire:
+            let fires = adjacent.filter { $0.element == .fire }.count
+            if fires > 0 {
+                selfBonus += 0.25 * Double(fires)
+                notes.append("+\(fires * 25)% Ignition")
+            }
+        case .ice:
+            if !adjacent.isEmpty {
+                selfBonus += 0.08 * Double(adjacent.count)
+                notes.append("+\(adjacent.count * 8)% Lattice")
+            }
+        case .void:
+            if !adjacent.isEmpty {
+                selfBonus += 0.50 * Double(adjacent.count)
+                notes.append("+\(adjacent.count * 50)% Devour")
+            }
+        case .radiant:
+            break
+        }
+
+        // What the neighbours do to this item.
+        let radiants = adjacent.filter { $0.element == .radiant }.count
+        let voids = adjacent.filter { $0.element == .void }.count
+        var neighbourBonus = 1.0
+        if radiants > 0 {
+            neighbourBonus += 0.20 * Double(radiants)
+            notes.append("+\(radiants * 20)% Beacon")
+        }
+        if voids > 0 {
+            neighbourBonus -= 0.15 * Double(voids)
+            notes.append("-\(voids * 15)% drained")
+        }
+        // A tile swarmed by Void still contributes something.
+        neighbourBonus = max(0.1, neighbourBonus)
+
+        return TileProduction(base: item.baseProduction,
+                              selfBonus: selfBonus,
+                              neighbourBonus: neighbourBonus,
+                              notes: notes)
+    }
+
 
     /// Items placed on the six tiles adjacent to `tile` in the offset hex layout.
     private func neighbours(of tile: GridTile, in grid: [[GridTile]]) -> [CelestialItem] {
@@ -710,6 +892,59 @@ struct GridTile: Identifiable {
     var placedItem: CelestialItem?
 }
 
+/// One tile's output, split into its parts so the UI can explain the number
+/// rather than just print it.
+struct TileProduction {
+    let base: Double
+    let selfBonus: Double
+    let neighbourBonus: Double
+    let notes: [String]
+
+    var total: Double { base * selfBonus * neighbourBonus }
+
+    /// True when neighbours are changing this tile's output either way.
+    var isModified: Bool { !notes.isEmpty }
+}
+
+// MARK: - Comet
+/// A short-lived bonus that lands on an empty tile and fades if ignored. The
+/// game has no fail state by design; this is the only thing that asks the
+/// player to act *now* rather than eventually.
+struct Comet: Identifiable {
+    let id = UUID()
+    let row: Int
+    let col: Int
+    let spawnedAt: Date
+    let lifetime: TimeInterval
+    let stardust: Double
+    let shards: Int
+
+    var expiresAt: Date { spawnedAt.addingTimeInterval(lifetime) }
+    var isExpired: Bool { Date() >= expiresAt }
+
+    /// 1 down to 0 over the comet's life, for the drain ring in the UI.
+    var remainingFraction: Double {
+        let left = expiresAt.timeIntervalSinceNow
+        return min(1, max(0, left / lifetime))
+    }
+}
+
+// MARK: - Daily Reward
+struct DailyReward {
+    let day: Int
+    let shards: Int
+    let gems: Int
+
+    /// Streak caps so a long absence doesn't make the game unwinnable to
+    /// re-enter, and so day 7 stays the ceiling worth coming back for.
+    static let maxStreakDay = 7
+
+    static func forStreak(_ streak: Int) -> DailyReward {
+        let day = min(max(1, streak), maxStreakDay)
+        return DailyReward(day: day, shards: 10 * day, gems: 2 + day)
+    }
+}
+
 // MARK: - Main Game ViewModel
 class GameViewModel: ObservableObject {
     @Published var stardust: Double = 0
@@ -721,6 +956,7 @@ class GameViewModel: ObservableObject {
     @Published var celestialRank: Int = 1
 
     @Published var totalMerges: Int = 0
+    @Published var totalFusions: Int = 0
     @Published var itemsForged: Int = 0
     @Published var highestTierReached: Int = 0
     @Published var claimedGoalIDs: Set<String> = []
@@ -729,6 +965,19 @@ class GameViewModel: ObservableObject {
     @Published var pendingOfflineEarnings: Double = 0
     /// Transient banner text describing the most recent merge.
     @Published var lastMergeSummary: String?
+
+    /// The comet currently streaking across the board, if any. Nothing is ever
+    /// lost by missing one — it just stops being free value.
+    @Published var comet: Comet?
+    /// Consecutive days the player has opened the game and collected.
+    @Published var dailyStreak: Int = 0
+    /// Set on launch when today's reward hasn't been taken yet.
+    @Published var pendingDailyReward: DailyReward?
+
+    // Starts now rather than in the distant past, so the first comet arrives a
+    // few minutes in instead of landing on top of the tutorial.
+    private var lastCometSpawn: Date = Date()
+    private var lastDailyClaim: Date?
     @Published var hasSeenTutorial: Bool = UserDefaults.standard.bool(forKey: "nf.hasSeenTutorial") {
         didSet { UserDefaults.standard.set(hasSeenTutorial, forKey: "nf.hasSeenTutorial") }
     }
@@ -758,8 +1007,30 @@ class GameViewModel: ObservableObject {
         25 * pow(1.18, Double(itemsForged)) * forgeCostFactor
     }
 
-    /// Placed items required before a Supernova can be triggered.
-    static let prestigeRequirement = 10
+    /// Minimum built-up power before a Supernova is allowed.
+    ///
+    /// This used to be a flat count of placed items, which meant ten tier-0
+    /// scraps paid exactly as much as ten fully evolved ones — merging deep was
+    /// strictly worse than spamming Forge. Power is the sum of what's actually
+    /// on the board, so depth is what pays.
+    static let prestigePowerRequirement: Double = 12
+
+    /// Sum of the raw production of every placed item. Deliberately ignores
+    /// adjacency bonuses: this measures what you built, not how you arranged it.
+    var prestigePower: Double {
+        gridTiles.flatMap { $0 }.compactMap { $0.placedItem?.baseProduction }.reduce(0, +)
+    }
+
+    /// Marks scale with the square root of power, so each Supernova is worth
+    /// more than the last without the curve running away.
+    var potentialMarks: Int {
+        guard prestigePower > 0 else { return 0 }
+        return max(0, Int((prestigePower / 5).squareRoot()))
+    }
+
+    var canPrestige: Bool {
+        prestigePower >= Self.prestigePowerRequirement && potentialMarks > 0
+    }
 
     private enum DefaultsKey {
         static let hasSavedState = "nf.hasSavedState"
@@ -771,12 +1042,15 @@ class GameViewModel: ObservableObject {
         static let permanentMultiplier = "nf.permanentMultiplier"
         static let hasPrestiged = "nf.hasPrestiged"
         static let totalMerges = "nf.totalMerges"
+        static let totalFusions = "nf.totalFusions"
         static let itemsForged = "nf.itemsForged"
         static let highestTierReached = "nf.highestTierReached"
         static let claimedGoalIDs = "nf.claimedGoalIDs"
         static let upgradeLevels = "nf.upgradeLevels"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
+        static let dailyStreak = "nf.dailyStreak"
+        static let lastDailyClaim = "nf.lastDailyClaim"
     }
 
     init() {
@@ -784,34 +1058,164 @@ class GameViewModel: ObservableObject {
         if !loadGameState() {
             initializeBoard()
         }
+        refreshDailyReward()
     }
+
+    /// How often a comet can appear, and how long it sticks around once it does.
+    static let cometInterval: TimeInterval = 180
+    static let cometLifetime: TimeInterval = 20
 
     func setupIdleCollection() {
         idleEngine.onTick = { [weak self] produced in
-            self?.stardust += produced
+            guard let self = self else { return }
+            self.stardust += produced
+            self.tickComet()
         }
         idleEngine.start()
     }
 
-    func initializeBoard() {
-        // Start with matched pairs so the first merge is immediately possible.
-        boardItems = ["fire_basic", "fire_basic", "ice_basic",
-                      "ice_basic", "void_basic", "void_basic"]
-            .compactMap { ItemCatalog.makeItem(chainID: $0) }
-        for _ in 0..<bonusStartingItems {
-            boardItems.append(randomStarterItem())
+    /// Spawns and expires the comet off the existing idle tick, so there's no
+    /// second timer to keep in sync.
+    private func tickComet() {
+        if let active = comet {
+            let tileTaken = gridTiles.indices.contains(active.row)
+                && gridTiles[active.row].indices.contains(active.col)
+                && gridTiles[active.row][active.col].placedItem != nil
+            if active.isExpired || tileTaken {
+                comet = nil
+            }
+            return
         }
 
-        // Initialize 5x5 hex grid
+        guard Date().timeIntervalSince(lastCometSpawn) >= Self.cometInterval,
+              let tile = freeUnlockedTiles.randomElement() else { return }
+
+        lastCometSpawn = Date()
+        // Worth about ninety seconds of current output, with a floor so it
+        // still means something in the first few minutes of a run.
+        let payout = max(25, idleEngine.totalProductionPerSec * 90)
+        comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
+                      lifetime: Self.cometLifetime, stardust: payout, shards: 3)
+        HapticManager.shared.itemPlace()
+    }
+
+    @discardableResult
+    func collectComet() -> Bool {
+        guard let active = comet, !active.isExpired else { return false }
+        stardust += active.stardust
+        starlightShards += active.shards
+        comet = nil
+        announceMerge("Comet caught   +\(abbreviatedNumber(active.stardust))")
+        HapticManager.shared.supernova()
+        saveGameState()
+        return true
+    }
+
+    func isCometTile(_ tile: GridTile) -> Bool {
+        guard let comet else { return false }
+        return comet.row == tile.row && comet.col == tile.col
+    }
+
+    // MARK: Daily reward
+
+    /// Decides whether today's reward is waiting and what it's worth. The
+    /// streak is the only thing in the game that rewards *when* you play.
+    private func refreshDailyReward() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        guard let last = lastDailyClaim else {
+            pendingDailyReward = DailyReward.forStreak(1)
+            return
+        }
+
+        let lastDay = calendar.startOfDay(for: last)
+        guard lastDay < today else {
+            // Already collected today.
+            pendingDailyReward = nil
+            return
+        }
+
+        // Missing a day resets the run — the streak is meant to reward actually
+        // coming back, not merely coming back eventually.
+        let gap = calendar.dateComponents([.day], from: lastDay, to: today).day ?? 0
+        pendingDailyReward = DailyReward.forStreak(gap == 1 ? dailyStreak + 1 : 1)
+    }
+
+    @discardableResult
+    func claimDailyReward() -> Bool {
+        guard let reward = pendingDailyReward else { return false }
+        starlightShards += reward.shards
+        nebulaGems += reward.gems
+        dailyStreak = reward.day
+        lastDailyClaim = Date()
+        pendingDailyReward = nil
+        HapticManager.shared.mergeSuccess()
+        saveGameState()
+        return true
+    }
+
+    /// Lays out a fresh 5x5 hex grid and seeds it. The unlocked region is a
+    /// parameter because a post-Supernova galaxy starts wider than a first run.
+    func initializeBoard(unlockedRows: Int = 3, unlockedCols: Int = 3) {
+        // Grid first: starting items are placed straight onto it, so it has to
+        // exist before they're spawned.
         gridTiles = (0..<5).map { row in
             (0..<5).map { col in
-                GridTile(row: row, col: col, isUnlocked: row < 2 && col < 3, placedItem: nil)
+                GridTile(row: row, col: col,
+                         isUnlocked: row < unlockedRows && col < unlockedCols,
+                         placedItem: nil)
             }
+        }
+        boardItems = []
+        comet = nil
+
+        // Start with matched pairs so the first merge is immediately possible,
+        // and leave free tiles so the player can still forge.
+        var starters = ["fire_basic", "fire_basic", "ice_basic",
+                        "ice_basic", "void_basic", "void_basic"]
+            .compactMap { ItemCatalog.makeItem(chainID: $0) }
+        for _ in 0..<bonusStartingItems {
+            starters.append(randomStarterItem())
+        }
+        for item in starters {
+            spawnOnBoard(item)
         }
 
         idleEngine.recalculate(from: gridTiles)
     }
 
+    /// Combines the item at `from` into the tile at `to`. The result lands on
+    /// `to`, so the player chooses where the power ends up — which is the whole
+    /// point of merging on the board instead of in a list.
+    @discardableResult
+    func mergeOnGrid(from: (row: Int, col: Int), to: (row: Int, col: Int)) -> Bool {
+        guard gridTiles.indices.contains(from.row),
+              gridTiles[from.row].indices.contains(from.col),
+              gridTiles.indices.contains(to.row),
+              gridTiles[to.row].indices.contains(to.col),
+              let source = gridTiles[from.row][from.col].placedItem,
+              let target = gridTiles[to.row][to.col].placedItem,
+              let merged = CelestialItem.merge(item1: source, item2: target) else {
+            HapticManager.shared.mergeFail()
+            return false
+        }
+
+        var placed = merged
+        placed.position = (to.row, to.col)
+        gridTiles[to.row][to.col].placedItem = placed
+        gridTiles[from.row][from.col].placedItem = nil
+
+        awardMerge(merged, isFusion: source.chainID != target.chainID)
+        idleEngine.recalculate(from: gridTiles)
+        GameCenterManager.shared.submitScore(clampedScore(stardust))
+        saveGameState()
+        return true
+    }
+
+    /// Merges two items in the overflow tray, which only fills up when the grid
+    /// has no room left.
+    @discardableResult
     func attemptMerge(_ item1: CelestialItem, _ item2: CelestialItem) -> Bool {
         guard let merged = CelestialItem.merge(item1: item1, item2: item2) else {
             HapticManager.shared.mergeFail()
@@ -821,19 +1225,26 @@ class GameViewModel: ObservableObject {
         boardItems.removeAll { $0.id == item1.id || $0.id == item2.id }
         boardItems.append(merged)
 
-        // Merging is the main source of Starlight Shards; higher tiers pay more.
-        let shardsGained = max(1, merged.tier * 2) * shardYieldMultiplier
+        awardMerge(merged, isFusion: item1.chainID != item2.chainID)
+        saveGameState()
+        return true
+    }
+
+    /// Shared payout for any combine. Merging is the main source of Starlight
+    /// Shards; higher tiers pay more and fusions pay a premium on top, since
+    /// they cost you a tier-up to set up.
+    private func awardMerge(_ merged: CelestialItem, isFusion: Bool) {
+        let fusionBonus = isFusion ? 3 : 1
+        let shardsGained = max(1, merged.tier * 2) * shardYieldMultiplier * fusionBonus
         starlightShards += shardsGained
         totalMerges += 1
+        if isFusion { totalFusions += 1 }
         highestTierReached = max(highestTierReached, merged.tier)
 
-        announceMerge("\(merged.name)   +\(shardsGained)")
+        announceMerge("\(isFusion ? "FUSION · " : "")\(merged.name)   +\(shardsGained)")
         celestialRank = 1 + totalMerges / 10
 
         HapticManager.shared.mergeSuccess()
-
-        saveGameState()
-        return true
     }
 
     /// Spends Starlight Shards to unlock the next locked tile, nearest first.
@@ -861,24 +1272,42 @@ class GameViewModel: ObservableObject {
         return ItemCatalog.makeItem(chainID: chainID) ?? ItemCatalog.makeItem(chainID: "fire_basic")!
     }
 
+    /// Drops a new item straight onto the board. There is no separate staging
+    /// area any more — items land where they'll produce. The tray is only a
+    /// fallback for when every unlocked tile is taken.
+    @discardableResult
+    private func spawnOnBoard(_ item: CelestialItem) -> Bool {
+        // Don't bury a live comet under a newly forged item.
+        let candidates = freeUnlockedTiles
+        guard let target = candidates.first(where: { !isCometTile($0) }) ?? candidates.first else {
+            boardItems.append(item)
+            return false
+        }
+        var placed = item
+        placed.position = (target.row, target.col)
+        gridTiles[target.row][target.col].placedItem = placed
+        idleEngine.recalculate(from: gridTiles)
+        return true
+    }
+
     /// Spends Stardust to forge a new item — the main progression loop.
     @discardableResult
     func forgeItem() -> Bool {
         guard stardust >= forgeItemCost else { return false }
         stardust -= forgeItemCost
         itemsForged += 1
-        boardItems.append(randomStarterItem())
+        spawnOnBoard(randomStarterItem())
         HapticManager.shared.itemPlace()
         saveGameState()
         return true
     }
 
-    /// Spends Nebula Gems to add a random tier-0 item to the merge board.
+    /// Spends Nebula Gems to add a random tier-0 item to the board.
     @discardableResult
     func summonItem() -> Bool {
         guard nebulaGems >= itemSummonCost else { return false }
         nebulaGems -= itemSummonCost
-        boardItems.append(randomStarterItem())
+        spawnOnBoard(randomStarterItem())
         HapticManager.shared.itemPlace()
         saveGameState()
         return true
@@ -965,31 +1394,66 @@ class GameViewModel: ObservableObject {
         return true
     }
 
-    /// Items on the board that could merge with `item`.
-    func mergeCandidates(for item: CelestialItem) -> Set<UUID> {
+    /// Every item sitting on the grid, with the tile it occupies.
+    var placedEntries: [(tile: GridTile, item: CelestialItem)] {
+        gridTiles.flatMap { $0 }.compactMap { tile in
+            tile.placedItem.map { (tile, $0) }
+        }
+    }
+
+    var placedCount: Int { placedEntries.count }
+
+    var freeUnlockedTiles: [GridTile] {
+        gridTiles.flatMap { $0 }.filter { $0.isUnlocked && $0.placedItem == nil }
+    }
+
+    /// Items on the grid that could combine with `item` — a tier-up or a fusion.
+    func mergePartners(for item: CelestialItem) -> Set<UUID> {
         Set(
-            boardItems
-                .filter { $0.id != item.id && $0.chainID == item.chainID && $0.tier == item.tier }
-                .map(\.id)
+            placedEntries
+                .filter { $0.item.id != item.id }
+                .filter { CelestialItem.merge(item1: item, item2: $0.item) != nil }
+                .map { $0.item.id }
         )
+    }
+
+    /// Whether any pair on the board can currently be combined.
+    var hasAvailableMerge: Bool {
+        placedEntries.contains { !mergePartners(for: $0.item).isEmpty }
+    }
+
+    /// Whether any pair on the board can specifically *fuse* into a hybrid.
+    var hasAvailableFusion: Bool {
+        placedEntries.contains { entry in
+            placedEntries.contains { other in
+                other.item.id != entry.item.id
+                    && other.item.chainID != entry.item.chainID
+                    && CelestialItem.merge(item1: entry.item, item2: other.item) != nil
+            }
+        }
     }
 
     /// The single most useful next action, surfaced as a hint in the UI.
     var nextStepHint: String {
-        let placed = gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count
-        if boardItems.isEmpty && placed == 0 {
-            return "Forge an item to begin."
+        if placedCount == 0 && boardItems.isEmpty {
+            return "Forge your first item to begin."
         }
-        if !boardItems.isEmpty && placed == 0 {
-            return "Place an item on your Galaxy grid to start earning Stardust."
+        if !boardItems.isEmpty {
+            return "Tap a held item to drop it on a free tile."
         }
-        if boardItems.count >= 2 {
-            return "Tap two matching items to merge them into a stronger one."
+        if hasAvailableFusion {
+            return "Two different elements at the same tier can fuse into a hybrid."
         }
-        if placed >= Self.prestigeRequirement {
+        if hasAvailableMerge {
+            return "Tap one item, then a matching one, to combine them."
+        }
+        if canPrestige {
             return "You can trigger a Supernova on the Nova tab."
         }
-        return "Forge more items, then place them in your Galaxy."
+        if freeUnlockedTiles.isEmpty {
+            return "Board is full — merge to make room, or unlock a tile."
+        }
+        return "Forge more items to fill your galaxy."
     }
 
     func placeItemOnGrid(_ item: CelestialItem, row: Int, col: Int) -> Bool {
@@ -1021,12 +1485,9 @@ class GameViewModel: ObservableObject {
     }
 
     func triggerSupernova() -> Bool {
-        // Check if board has enough placed items
-        let placedCount = gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count
-        guard placedCount >= Self.prestigeRequirement else { return false }
+        guard canPrestige else { return false }
 
-        // Calculate Galaxy Marks earned
-        let earnedMarks = placedCount / 5
+        let earnedMarks = potentialMarks
         galaxyMarks += earnedMarks
         // Prestiging is the only source of Nebula Gems.
         nebulaGems += earnedMarks * 2
@@ -1036,16 +1497,10 @@ class GameViewModel: ObservableObject {
         let multiplier = 1.0 + (Double(earnedMarks) * 0.1)
         idleEngine.applyPermanentMultiplier(multiplier)
 
-        // Start a new cycle, then unlock the larger post-prestige grid
-        // (must happen after initializeBoard(), which would otherwise reset
-        // the grid back to the small starting pattern).
-        initializeBoard()
-        gridTiles = (0..<5).map { row in
-            (0..<5).map { col in
-                GridTile(row: row, col: col, isUnlocked: row < 3 && col < 4, placedItem: nil)
-            }
-        }
-        idleEngine.recalculate(from: gridTiles)
+        // Start a new cycle on the wider post-prestige grid. The unlock pattern
+        // is passed in rather than applied afterwards — rebuilding gridTiles
+        // after seeding would wipe the items just placed.
+        initializeBoard(unlockedRows: 3, unlockedCols: 4)
 
         // Submit prestige achievement
         GameCenterManager.shared.submitScore(Int64(galaxyMarks), leaderboardID: "nebulaforge.prestige")
@@ -1067,11 +1522,16 @@ class GameViewModel: ObservableObject {
         defaults.set(idleEngine.permanentMultiplier, forKey: DefaultsKey.permanentMultiplier)
         defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
         defaults.set(totalMerges, forKey: DefaultsKey.totalMerges)
+        defaults.set(totalFusions, forKey: DefaultsKey.totalFusions)
         defaults.set(itemsForged, forKey: DefaultsKey.itemsForged)
         defaults.set(highestTierReached, forKey: DefaultsKey.highestTierReached)
         defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
         defaults.set(upgradeLevels, forKey: DefaultsKey.upgradeLevels)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
+        defaults.set(dailyStreak, forKey: DefaultsKey.dailyStreak)
+        if let lastDailyClaim {
+            defaults.set(lastDailyClaim, forKey: DefaultsKey.lastDailyClaim)
+        }
 
         // Tiles can be unlocked by spending shards, so the unlocked set has to
         // be stored rather than recomputed from prestige state alone.
@@ -1138,11 +1598,14 @@ class GameViewModel: ObservableObject {
         celestialRank = max(1, defaults.integer(forKey: DefaultsKey.celestialRank))
         hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
         totalMerges = defaults.integer(forKey: DefaultsKey.totalMerges)
+        totalFusions = defaults.integer(forKey: DefaultsKey.totalFusions)
         itemsForged = defaults.integer(forKey: DefaultsKey.itemsForged)
         highestTierReached = defaults.integer(forKey: DefaultsKey.highestTierReached)
         claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
         upgradeLevels = defaults.dictionary(forKey: DefaultsKey.upgradeLevels) as? [String: Int] ?? [:]
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
+        dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
+        lastDailyClaim = defaults.object(forKey: DefaultsKey.lastDailyClaim) as? Date
 
         // Saves written before tile unlocking existed have no stored set, so
         // fall back to deriving it from prestige state.
@@ -1196,7 +1659,13 @@ class GameViewModel: ObservableObject {
                 }
             }
 
-            boardItems = loadedBoardItems
+            // Saves written before the board was unified kept most items in a
+            // separate staging tray, where they produced nothing. Move them onto
+            // free tiles; whatever doesn't fit stays in the tray.
+            boardItems = []
+            for item in loadedBoardItems {
+                spawnOnBoard(item)
+            }
         } catch {
             print("Failed to load game state: \(error)")
         }
@@ -1227,233 +1696,70 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var showTutorial = false
     @State private var showOfflineEarnings = false
+    @State private var showDailyReward = false
 
+    // Merging and producing now happen on the same board, so the old separate
+    // Merge tab is gone — placement decisions and their payoff are visible
+    // together instead of on two screens that never showed each other.
     var body: some View {
         TabView(selection: $selectedTab) {
-            MergeBoardView()
-                .tabItem {
-                    Label("Merge", systemImage: "circle.grid.cross.fill")
-                }
-                .tag(0)
-
             GalacticCanvasView()
                 .tabItem {
                     Label("Galaxy", systemImage: "sparkles")
                 }
-                .tag(1)
+                .tag(0)
 
             PrestigeView()
                 .tabItem {
                     Label("Nova", systemImage: "burst.fill")
                 }
-                .tag(2)
+                .tag(1)
 
             GoalsView()
                 .tabItem {
                     Label("Goals", systemImage: "target")
                 }
                 .badge(gameVM.claimableGoals.count)
-                .tag(3)
+                .tag(2)
 
             ShopView()
                 .tabItem {
                     Label("Shop", systemImage: "cart.fill")
                 }
-                .tag(4)
+                .tag(3)
         }
         .tint(.purple)
         .sheet(isPresented: $showTutorial, onDismiss: {
             gameVM.hasSeenTutorial = true
+            showNextPrompt()
         }) {
             TutorialView()
         }
         .sheet(isPresented: $showOfflineEarnings, onDismiss: {
             gameVM.pendingOfflineEarnings = 0
+            showNextPrompt()
         }) {
             OfflineEarningsView(amount: gameVM.pendingOfflineEarnings)
         }
+        .sheet(isPresented: $showDailyReward) {
+            DailyRewardView()
+        }
         .onAppear {
+            showNextPrompt()
+        }
+    }
+
+    /// A launch can have three things to say at once. Show them one at a time,
+    /// most contextual first. The delay is what makes presenting the next sheet
+    /// from a previous sheet's `onDismiss` reliable.
+    private func showNextPrompt() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             if !gameVM.hasSeenTutorial {
                 showTutorial = true
             } else if gameVM.pendingOfflineEarnings > 0 {
                 showOfflineEarnings = true
-            }
-        }
-    }
-}
-
-// MARK: - Merge Board View
-struct MergeBoardView: View {
-    @EnvironmentObject var gameVM: GameViewModel
-    // Tap-to-select rather than drag-and-drop: drag gestures fight the
-    // enclosing ScrollView on iPhone and were effectively unusable.
-    @State private var selectedItemID: UUID?
-    @State private var showTutorial = false
-
-    let columns = [GridItem(.adaptive(minimum: 80))]
-
-    private var selectedItem: CelestialItem? {
-        gameVM.boardItems.first { $0.id == selectedItemID }
-    }
-
-    private var mergeableIDs: Set<UUID> {
-        guard let selectedItem else { return [] }
-        return gameVM.mergeCandidates(for: selectedItem)
-    }
-
-    private func handleTap(on item: CelestialItem) {
-        guard let current = selectedItem else {
-            selectedItemID = item.id
-            return
-        }
-
-        if current.id == item.id {
-            selectedItemID = nil
-            return
-        }
-
-        if gameVM.attemptMerge(current, item) {
-            selectedItemID = nil
-        } else {
-            // Not a valid pair — treat the tap as picking a new item instead
-            // of failing silently.
-            selectedItemID = item.id
-        }
-    }
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                CosmicBackground()
-
-                VStack(spacing: 8) {
-                    // Resource Bar
-                    HStack {
-                        ResourceBadge(icon: "star.fill", value: gameVM.stardust, color: .yellow)
-                        Spacer()
-                        ResourceBadge(icon: "sparkle", value: gameVM.starlightShards, color: .blue)
-                        Spacer()
-                        ResourceBadge(icon: "diamond.fill", value: gameVM.nebulaGems, color: .purple)
-                    }
-                    .padding()
-                    .background(.ultraThinMaterial)
-
-                    Text(gameVM.nextStepHint)
-                        .font(.caption)
-                        .foregroundColor(.yellow.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-
-                    HStack {
-                        Text("\(abbreviatedNumber(gameVM.idleEngine.totalProductionPerSec))/sec")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.7))
-
-                        Spacer()
-
-                        Button {
-                            _ = gameVM.summonItem()
-                        } label: {
-                            Label("\(gameVM.itemSummonCost)", systemImage: "diamond.fill")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.purple)
-                        .disabled(gameVM.nebulaGems < gameVM.itemSummonCost)
-
-                        Button {
-                            _ = gameVM.forgeItem()
-                        } label: {
-                            Label("Forge (\(abbreviatedNumber(gameVM.forgeItemCost)))", systemImage: "hammer.fill")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.orange)
-                        .disabled(gameVM.stardust < gameVM.forgeItemCost)
-                    }
-                    .padding(.horizontal)
-
-                    if gameVM.boardItems.isEmpty {
-                        Spacer()
-                        VStack(spacing: 12) {
-                            Image(systemName: "hammer.fill")
-                                .font(.system(size: 44))
-                                .foregroundColor(.orange.opacity(0.8))
-                            Text("No items yet")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                            Text("Forge one with Stardust, or place items in your Galaxy to earn more.")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.7))
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
-                        }
-                        Spacer()
-                    } else {
-                        ScrollView {
-                            LazyVGrid(columns: columns, spacing: 15) {
-                                ForEach(gameVM.boardItems) { item in
-                                    Button {
-                                        handleTap(on: item)
-                                    } label: {
-                                        ItemCard(item: item)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 12)
-                                                    .stroke(
-                                                        selectedItemID == item.id ? Color.yellow
-                                                            : (mergeableIDs.contains(item.id) ? Color.green : Color.clear),
-                                                        lineWidth: selectedItemID == item.id ? 3 : 2
-                                                    )
-                                            )
-                                            .scaleEffect(selectedItemID == item.id ? 1.08 : 1.0)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding()
-                            .animation(.spring(response: 0.3), value: selectedItemID)
-                        }
-                    }
-                }
-            }
-            .overlay(alignment: .top) {
-                if let summary = gameVM.lastMergeSummary {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles")
-                        Text(summary)
-                            .font(.subheadline.bold())
-                    }
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Capsule().fill(Color.yellow))
-                    .shadow(radius: 8)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-            .animation(.spring(response: 0.35), value: gameVM.lastMergeSummary)
-            .navigationTitle("Merge Board")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        showTutorial = true
-                    } label: {
-                        Image(systemName: "questionmark.circle")
-                            .foregroundColor(.white)
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        GameCenterManager.shared.showLeaderboard()
-                    }) {
-                        Image(systemName: "trophy.fill")
-                            .foregroundColor(.yellow)
-                    }
-                }
-            }
-            .sheet(isPresented: $showTutorial) {
-                TutorialView()
+            } else if gameVM.pendingDailyReward != nil {
+                showDailyReward = true
             }
         }
     }
@@ -1655,21 +1961,102 @@ struct OfflineEarningsView: View {
     }
 }
 
+// MARK: - Daily Reward
+/// The only thing in the game that rewards *when* you play. Everything else
+/// pays the same whenever you get to it, which gave the player no reason to
+/// open the app on any particular day.
+struct DailyRewardView: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        ZStack {
+            CosmicBackground()
+
+            VStack(spacing: 18) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 56))
+                    .foregroundStyle(.yellow, .orange)
+
+                Text("Daily Alignment")
+                    .font(.largeTitle.bold())
+                    .foregroundColor(.white)
+
+                if let reward = gameVM.pendingDailyReward {
+                    Text("Day \(reward.day) of \(DailyReward.maxStreakDay)")
+                        .font(.headline)
+                        .foregroundColor(.yellow)
+
+                    HStack(spacing: 8) {
+                        ForEach(1...DailyReward.maxStreakDay, id: \.self) { day in
+                            Circle()
+                                .fill(day <= reward.day ? Color.yellow : Color.white.opacity(0.2))
+                                .frame(width: 12, height: 12)
+                        }
+                    }
+
+                    HStack(spacing: 24) {
+                        Label("\(reward.shards)", systemImage: "sparkle")
+                            .foregroundColor(.blue)
+                        Label("\(reward.gems)", systemImage: "diamond.fill")
+                            .foregroundColor(.purple)
+                    }
+                    .font(.title3.bold())
+                    .padding()
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(16)
+
+                    Text("Miss a day and the streak resets to one.")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+
+                    Button {
+                        gameVM.claimDailyReward()
+                        dismiss()
+                    } label: {
+                        Text("Collect")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(
+                                LinearGradient(colors: [.purple, .blue],
+                                               startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(15)
+                    }
+                    .padding(.horizontal, 40)
+                } else {
+                    Text("Already collected today. Come back tomorrow.")
+                        .foregroundColor(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+
+                    Button("Close") { dismiss() }
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding()
+        }
+    }
+}
+
 // MARK: - Tutorial
 struct TutorialView: View {
     @Environment(\.dismiss) var dismiss
 
     private let steps: [(icon: String, title: String, detail: String)] = [
         ("hammer.fill", "Forge Items",
-         "Spend Stardust to forge new celestial items. This is where every run begins."),
-        ("circle.grid.cross.fill", "Merge Matching Items",
-         "Tap one item, then tap a matching one. They combine into a stronger item worth triple the production."),
-        ("sparkles", "Build Your Galaxy",
-         "Place items on the hex grid. Placed items generate Stardust every second, even while you're away."),
-        ("link", "Chain Elements",
-         "Items of the same element sitting next to each other boost each other's output by 15%."),
+         "Spend Stardust to forge new items. They land straight on the board and start producing immediately."),
+        ("circle.grid.cross.fill", "Merge In Place",
+         "Tap one item, then a matching one. They combine into a stronger item worth triple the production — and it lands on the second tile, so you choose where the power ends up."),
+        ("link", "Position Is Everything",
+         "Every element earns its output differently and changes its neighbours. The number under each item is what that tile actually produces — watch it move as you rearrange."),
+        ("wand.and.stars", "Fuse Opposites",
+         "Two *different* elements at the same tier can fuse into a hybrid instead of tiering up. Hybrids produce far more, and pay triple Shards."),
+        ("sparkles", "Catch Comets",
+         "A comet lands on a free tile every few minutes and fades after about twenty seconds. Tap it before it goes for a burst of Stardust."),
         ("burst.fill", "Go Supernova",
-         "With \(GameViewModel.prestigeRequirement) items placed, trigger a Supernova. You lose the board but keep a permanent multiplier and earn Gems.")
+         "Once your board has enough Power, trigger a Supernova. You lose the galaxy but keep a permanent multiplier and earn Gems. Marks scale with how deep you merged, not how many items you crammed in.")
     ]
 
     var body: some View {
@@ -1696,6 +2083,31 @@ struct TutorialView: View {
                                         .font(.subheadline.bold())
                                         .foregroundColor(.white)
                                     Text(step.detail)
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.75))
+                                }
+                            }
+                        }
+
+                        Divider().background(Color.white.opacity(0.3))
+
+                        Text("The Four Elements")
+                            .font(.headline)
+                            .foregroundColor(.white)
+
+                        ForEach(Element.allCases, id: \.self) { element in
+                            HStack(alignment: .top, spacing: 14) {
+                                Circle()
+                                    .fill(element.tint)
+                                    .frame(width: 12, height: 12)
+                                    .padding(.top, 4)
+                                    .frame(width: 32)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(element.displayName) — \(element.roleName)")
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(element.tint)
+                                    Text(element.roleDetail)
                                         .font(.caption)
                                         .foregroundColor(.white.opacity(0.75))
                                 }
@@ -1800,87 +2212,341 @@ struct ResourceBadge: View {
 }
 
 // MARK: - Galactic Canvas (Hex Grid)
+/// Position of a tile, as a value the view can hold in `@State` and compare.
+struct GridPosition: Hashable {
+    let row: Int
+    let col: Int
+}
+
+/// The whole game happens here now. Items are forged straight onto the board,
+/// merged in place, and produce from wherever they sit — so a placement and its
+/// payoff are visible at the same moment, instead of on two screens that never
+/// showed each other.
 struct GalacticCanvasView: View {
     @EnvironmentObject var gameVM: GameViewModel
-    @State private var selectedItem: CelestialItem?
+
+    // Tap-to-select rather than drag-and-drop: drag gestures fight the
+    // enclosing ScrollView on iPhone and were effectively unusable.
+    @State private var selectedPosition: GridPosition?
+    @State private var selectedTrayItemID: UUID?
+    @State private var blockReason: String?
+    @State private var showTutorial = false
+
+    private var selectedItem: CelestialItem? {
+        selectedPosition.flatMap { item(at: $0) }
+    }
+
+    private var selectedTrayItem: CelestialItem? {
+        gameVM.boardItems.first { $0.id == selectedTrayItemID }
+    }
+
+    /// Items already on the board that the current selection could combine with.
+    private var mergeableIDs: Set<UUID> {
+        guard let selectedItem else { return [] }
+        return gameVM.mergePartners(for: selectedItem)
+    }
+
+    private func tile(at position: GridPosition) -> GridTile? {
+        guard gameVM.gridTiles.indices.contains(position.row),
+              gameVM.gridTiles[position.row].indices.contains(position.col) else { return nil }
+        return gameVM.gridTiles[position.row][position.col]
+    }
+
+    private func item(at position: GridPosition) -> CelestialItem? {
+        tile(at: position)?.placedItem
+    }
+
+    private func handleTap(row: Int, col: Int) {
+        let position = GridPosition(row: row, col: col)
+        guard let tapped = tile(at: position) else { return }
+        blockReason = nil
+
+        // The comet is the only time-critical thing on the board, so it wins
+        // the tap regardless of what's selected.
+        if gameVM.isCometTile(tapped), gameVM.comet != nil {
+            gameVM.collectComet()
+            return
+        }
+
+        guard tapped.isUnlocked else { return }
+
+        // Dropping a held overflow item onto a free tile.
+        if let trayItem = selectedTrayItem, tapped.placedItem == nil {
+            _ = gameVM.placeItemOnGrid(trayItem, row: row, col: col)
+            selectedTrayItemID = nil
+            return
+        }
+
+        guard tapped.placedItem != nil else {
+            selectedPosition = nil
+            return
+        }
+
+        guard let current = selectedPosition else {
+            selectedPosition = position
+            return
+        }
+
+        if current == position {
+            selectedPosition = nil
+            return
+        }
+
+        if gameVM.mergeOnGrid(from: (current.row, current.col), to: (row, col)) {
+            selectedPosition = nil
+            return
+        }
+
+        // Say why it didn't combine rather than failing silently, then treat
+        // the tap as picking a new item.
+        if let a = item(at: current), let b = item(at: position) {
+            blockReason = CelestialItem.mergeBlockReason(item1: a, item2: b)
+        }
+        selectedPosition = position
+    }
 
     var body: some View {
         NavigationView {
             ZStack {
                 CosmicBackground()
 
-                VStack {
-                    Text("Your Galaxy")
-                        .font(.headline)
-                        .foregroundColor(.white)
-
-                    HStack {
-                        ResourceBadge(icon: "sparkle", value: gameVM.starlightShards, color: .blue)
-
-                        Spacer()
-
-                        Button {
-                            _ = gameVM.unlockNextTile()
-                        } label: {
-                            Label("Unlock Tile (\(gameVM.tileUnlockCost))", systemImage: "lock.open.fill")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.blue)
-                        .disabled(gameVM.starlightShards < gameVM.tileUnlockCost)
-                    }
-                    .padding(.horizontal)
+                VStack(spacing: 8) {
+                    resourceBar
+                    actionBar
+                    hintLine
 
                     ScrollView([.horizontal, .vertical]) {
-                        VStack(spacing: -10) {
-                            ForEach(0..<gameVM.gridTiles.count, id: \.self) { row in
-                                HStack(spacing: -5) {
-                                    ForEach(0..<gameVM.gridTiles[row].count, id: \.self) { col in
-                                        HexTileView(
-                                            tile: gameVM.gridTiles[row][col],
-                                            isSelected: selectedItem != nil,
-                                            onPlace: {
-                                                if let item = selectedItem {
-                                                    _ = gameVM.placeItemOnGrid(item, row: row, col: col)
-                                                    selectedItem = nil
-                                                }
-                                            },
-                                            onRemove: {
-                                                gameVM.removeItemFromGrid(row: row, col: col)
-                                            }
-                                        )
-                                        .offset(x: row % 2 == 0 ? 25 : 0)
-                                    }
-                                }
-                            }
-                        }
-                        .padding()
+                        hexGrid.padding()
                     }
 
-                    // Item picker for placement
-                    ScrollView(.horizontal) {
-                        HStack {
-                            ForEach(gameVM.boardItems) { item in
-                                Button(action: {
-                                    selectedItem = item
-                                }) {
-                                    ItemCard(item: item)
-                                        .scaleEffect(0.8)
-                                        .opacity(selectedItem?.id == item.id ? 1.0 : 0.6)
-                                        .overlay(
-                                            selectedItem?.id == item.id ?
-                                            RoundedRectangle(cornerRadius: 12).stroke(Color.yellow, lineWidth: 2) :
-                                            nil
-                                        )
-                                }
-                            }
-                        }
-                        .padding()
+                    selectionPanel
+
+                    if !gameVM.boardItems.isEmpty {
+                        overflowTray
                     }
-                    .background(.ultraThinMaterial)
                 }
             }
-            .navigationTitle("Galaxy")
+            .overlay(alignment: .top) { mergeBanner }
+            .animation(.spring(response: 0.35), value: gameVM.lastMergeSummary)
+            .navigationTitle("Nebula Forge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showTutorial = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundColor(.white)
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        GameCenterManager.shared.showLeaderboard()
+                    } label: {
+                        Image(systemName: "trophy.fill")
+                            .foregroundColor(.yellow)
+                    }
+                }
+            }
+            .sheet(isPresented: $showTutorial) {
+                TutorialView()
+            }
+        }
+    }
+
+    // MARK: Pieces
+    // Split out so the type-checker isn't handed one enormous body expression.
+
+    private var resourceBar: some View {
+        HStack {
+            ResourceBadge(icon: "star.fill", value: gameVM.stardust, color: .yellow)
+            Spacer()
+            ResourceBadge(icon: "sparkle", value: gameVM.starlightShards, color: .blue)
+            Spacer()
+            ResourceBadge(icon: "diamond.fill", value: gameVM.nebulaGems, color: .purple)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Text("\(abbreviatedNumber(gameVM.idleEngine.totalProductionPerSec))/sec")
+                .font(.caption.bold())
+                .foregroundColor(.white.opacity(0.8))
+
+            Spacer()
+
+            Button {
+                _ = gameVM.unlockNextTile()
+            } label: {
+                Label("\(gameVM.tileUnlockCost)", systemImage: "lock.open.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            .disabled(gameVM.starlightShards < gameVM.tileUnlockCost)
+
+            Button {
+                _ = gameVM.summonItem()
+            } label: {
+                Label("\(gameVM.itemSummonCost)", systemImage: "diamond.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .tint(.purple)
+            .disabled(gameVM.nebulaGems < gameVM.itemSummonCost)
+
+            Button {
+                _ = gameVM.forgeItem()
+            } label: {
+                Label(abbreviatedNumber(gameVM.forgeItemCost), systemImage: "hammer.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .disabled(gameVM.stardust < gameVM.forgeItemCost)
+        }
+        .padding(.horizontal)
+    }
+
+    private var hintLine: some View {
+        Text(blockReason ?? gameVM.nextStepHint)
+            .font(.caption)
+            .foregroundColor(blockReason == nil ? .yellow.opacity(0.9) : .red.opacity(0.9))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal)
+    }
+
+    private var hexGrid: some View {
+        VStack(spacing: -10) {
+            ForEach(0..<gameVM.gridTiles.count, id: \.self) { row in
+                HStack(spacing: -5) {
+                    ForEach(0..<gameVM.gridTiles[row].count, id: \.self) { col in
+                        hexTile(row: row, col: col)
+                            .offset(x: row % 2 == 0 ? 25 : 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private func hexTile(row: Int, col: Int) -> some View {
+        let tile = gameVM.gridTiles[row][col]
+        let position = GridPosition(row: row, col: col)
+        let output = tile.placedItem == nil
+            ? 0
+            : gameVM.idleEngine.production(for: tile, in: gameVM.gridTiles).total
+
+        return HexTileView(
+            tile: tile,
+            isSelected: selectedPosition == position,
+            isMergeCandidate: tile.placedItem.map { mergeableIDs.contains($0.id) } ?? false,
+            isPlacementTarget: selectedTrayItemID != nil && tile.isUnlocked && tile.placedItem == nil,
+            comet: gameVM.isCometTile(tile) ? gameVM.comet : nil,
+            output: output,
+            onTap: { handleTap(row: row, col: col) }
+        )
+    }
+
+    /// The number the board used to hide. Shows what the selected tile actually
+    /// produces and which neighbours are changing it.
+    @ViewBuilder
+    private var selectionPanel: some View {
+        if let position = selectedPosition,
+           let item = selectedItem,
+           let tile = tile(at: position) {
+            let breakdown = gameVM.idleEngine.production(for: tile, in: gameVM.gridTiles)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(item.name)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("T\(item.tier)")
+                        .font(.caption2.bold())
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(item.element.tint))
+                    Spacer()
+                    Text("\(abbreviatedNumber(breakdown.total))/sec")
+                        .font(.caption.bold())
+                        .foregroundColor(.yellow)
+                }
+
+                Text("\(item.element.roleName) — \(item.element.roleDetail)")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.65))
+
+                if breakdown.isModified {
+                    HStack(spacing: 8) {
+                        ForEach(breakdown.notes, id: \.self) { note in
+                            Text(note)
+                                .font(.caption2.bold())
+                                .foregroundColor(note.hasPrefix("-") ? .red : .green)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.ultraThinMaterial)
+            .cornerRadius(12)
+            .padding(.horizontal)
+        }
+    }
+
+    /// Only appears when every unlocked tile is taken — forged items normally
+    /// land straight on the board.
+    private var overflowTray: some View {
+        VStack(spacing: 2) {
+            Text("Overflow — no free tiles")
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.6))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(gameVM.boardItems) { item in
+                        Button {
+                            selectedTrayItemID = (selectedTrayItemID == item.id) ? nil : item.id
+                            selectedPosition = nil
+                        } label: {
+                            ItemCard(item: item)
+                                .scaleEffect(0.75)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(selectedTrayItemID == item.id ? Color.yellow : Color.clear,
+                                                lineWidth: 3)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+            .frame(height: 90)
+        }
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial)
+    }
+
+    @ViewBuilder
+    private var mergeBanner: some View {
+        if let summary = gameVM.lastMergeSummary {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                Text(summary)
+                    .font(.subheadline.bold())
+            }
+            .foregroundColor(.black)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(Color.yellow))
+            .shadow(radius: 8)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 }
@@ -1905,6 +2571,12 @@ struct CelestialItemSprite: View {
         "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
     }
 
+    /// Hybrids have no artwork of their own yet — they borrow their element's,
+    /// so they need a mark to be tellable apart at a glance.
+    private var isHybrid: Bool {
+        ItemCatalog.chain(for: item.chainID)?.isHybrid ?? false
+    }
+
     var body: some View {
         ZStack {
             if item.tier >= 3 {
@@ -1926,6 +2598,16 @@ struct CelestialItemSprite: View {
                 .scaledToFit()
                 .frame(width: size + 12, height: size + 12)
                 .shadow(color: baseColor.opacity(0.5), radius: item.tier >= 5 ? 10 : 4)
+
+            if isHybrid {
+                Circle()
+                    .strokeBorder(
+                        AngularGradient(colors: [.white, baseColor, .white, baseColor, .white],
+                                        center: .center),
+                        lineWidth: 2
+                    )
+                    .frame(width: size + 16, height: size + 16)
+            }
         }
         .frame(width: size + 20, height: size + 20)
     }
@@ -1936,17 +2618,28 @@ struct CelestialItemSprite: View {
 struct HexTileView: View {
     let tile: GridTile
     let isSelected: Bool
-    let onPlace: () -> Void
-    let onRemove: () -> Void
+    let isMergeCandidate: Bool
+    let isPlacementTarget: Bool
+    let comet: Comet?
+    let output: Double
+    let onTap: () -> Void
+
+    private var strokeColor: Color {
+        if isSelected { return .yellow }
+        if isMergeCandidate { return .green }
+        if isPlacementTarget { return .yellow.opacity(0.7) }
+        if !tile.isUnlocked { return .gray.opacity(0.3) }
+        return .white.opacity(0.4)
+    }
+
+    private var strokeWidth: CGFloat {
+        if isSelected { return 3 }
+        if isMergeCandidate || isPlacementTarget { return 2.5 }
+        return 1.5
+    }
 
     var body: some View {
-        Button(action: {
-            if tile.placedItem != nil {
-                onRemove()
-            } else if isSelected && tile.isUnlocked {
-                onPlace()
-            }
-        }) {
+        Button(action: onTap) {
             ZStack {
                 HexagonShape()
                     .fill(
@@ -1962,18 +2655,24 @@ struct HexTileView: View {
                     )
                     .overlay(
                         HexagonShape()
-                            .stroke(
-                                isSelected && tile.isUnlocked && tile.placedItem == nil
-                                ? Color.yellow
-                                : (tile.isUnlocked ? Color.white.opacity(0.4) : Color.gray.opacity(0.3)),
-                                lineWidth: isSelected && tile.isUnlocked ? 2.5 : 1.5
-                            )
+                            .stroke(strokeColor, lineWidth: strokeWidth)
                     )
                     .frame(width: 65, height: 75)
 
                 if let item = tile.placedItem {
-                    CelestialItemSprite(item: item, size: 40)
-                        .transition(.scale.combined(with: .opacity))
+                    VStack(spacing: 0) {
+                        CelestialItemSprite(item: item, size: 32)
+                        // The per-tile number is the point of merging the two
+                        // boards: adjacency effects are now readable in place.
+                        Text(abbreviatedNumber(output))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.yellow)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+
+                if let comet {
+                    CometBadge(comet: comet)
                 }
 
                 if !tile.isUnlocked {
@@ -1982,7 +2681,35 @@ struct HexTileView: View {
                         .foregroundColor(.gray.opacity(0.5))
                 }
             }
-            .animation(.spring(response: 0.3), value: tile.placedItem != nil)
+            .scaleEffect(isSelected ? 1.08 : 1.0)
+            .animation(.spring(response: 0.3), value: isSelected)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A comet sitting on a tile, wrapped in a ring that drains as its window
+/// closes. Redraws come free — the idle tick already republishes ten times a
+/// second, so there's no separate animation timer.
+struct CometBadge: View {
+    let comet: Comet
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.2), lineWidth: 3)
+                .frame(width: 46, height: 46)
+
+            Circle()
+                .trim(from: 0, to: CGFloat(comet.remainingFraction))
+                .stroke(Color.cyan, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 46, height: 46)
+
+            Image(systemName: "sparkles")
+                .font(.title3.bold())
+                .foregroundStyle(.white, .cyan)
+                .shadow(color: .cyan, radius: 6)
         }
     }
 }
@@ -2099,12 +2826,13 @@ struct PrestigeView: View {
     @State private var showConfirmation = false
     @State private var supernovaAnimation = false
 
-    var placedCount: Int {
-        gameVM.gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count
-    }
+    private var potentialMarks: Int { gameVM.potentialMarks }
+    private var power: Double { gameVM.prestigePower }
+    private var ready: Bool { gameVM.canPrestige }
 
-    var potentialMarks: Int {
-        placedCount / 5
+    /// How far along the power requirement the player is, for the bar.
+    private var readiness: Double {
+        min(1, power / GameViewModel.prestigePowerRequirement)
     }
 
     var body: some View {
@@ -2122,13 +2850,18 @@ struct PrestigeView: View {
 
                 ScrollView {
                     VStack(spacing: 22) {
-                        Text(placedCount >= GameViewModel.prestigeRequirement ? "Supernova Ready" : "Supernova Locked")
+                        Text(ready ? "Supernova Ready" : "Supernova Locked")
                             .font(.title.bold())
                             .foregroundColor(.white)
 
-                        VStack {
-                            Text("\(placedCount) / \(GameViewModel.prestigeRequirement) items placed")
-                                .foregroundColor(.white.opacity(0.8))
+                        VStack(spacing: 6) {
+                            Text("Galaxy Power \(abbreviatedNumber(power))")
+                                .foregroundColor(.white.opacity(0.85))
+
+                            ProgressView(value: readiness)
+                                .tint(ready ? .yellow : .blue)
+                                .frame(maxWidth: 220)
+
                             Text("Potential Galaxy Marks: \(potentialMarks)")
                                 .font(.title2)
                                 .foregroundColor(.yellow)
@@ -2139,10 +2872,19 @@ struct PrestigeView: View {
                         .background(.ultraThinMaterial)
                         .cornerRadius(15)
 
-                        Text("Resetting destroys everything in this galaxy, but Galaxy Marks are permanent — spend them below.")
+                        // Worth spelling out, because the rule changed: Marks
+                        // used to be a flat count of placed items, which made
+                        // merging deep strictly worse than forging junk.
+                        Text("Power is the sum of everything on your board, and each tier is worth triple the last. Merge deep before you burn it down.")
                             .font(.caption)
                             .multilineTextAlignment(.center)
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.white.opacity(0.75))
+                            .padding(.horizontal)
+
+                        Text("Resetting destroys this galaxy, but Galaxy Marks are permanent — spend them below.")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.white.opacity(0.55))
                             .padding(.horizontal)
 
                         Button(action: {
@@ -2158,7 +2900,7 @@ struct PrestigeView: View {
                                 )
                                 .cornerRadius(15)
                         }
-                        .disabled(placedCount < GameViewModel.prestigeRequirement)
+                        .disabled(!ready)
                         .padding(.horizontal)
 
                         Divider().background(Color.white.opacity(0.3))
