@@ -7,6 +7,13 @@
 	<key>teamID</key>
 	<string>862WW535F7</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.ema19rivas99.nebulaforge</key>
+		<string>NebulaForge App Store</string>
+	</dict>
 </dict>
 </plist>
