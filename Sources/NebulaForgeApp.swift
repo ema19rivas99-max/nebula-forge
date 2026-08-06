@@ -941,8 +941,7 @@ struct MergeBoardView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                LinearGradient(colors: [Color(red: 0.05, green: 0.02, blue: 0.3), Color(red: 0.1, green: 0.05, blue: 0.4)], startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea()
+                CosmicBackground()
 
                 VStack {
                     // Resource Bar
@@ -1008,26 +1007,9 @@ struct ItemDropDelegate: DropDelegate {
 struct ItemCard: View {
     let item: CelestialItem
 
-    var elementColor: Color {
-        switch item.element {
-        case .fire: return .orange
-        case .ice: return .cyan
-        case .void: return .indigo
-        case .radiant: return .yellow
-        }
-    }
-
     var body: some View {
         VStack {
-            ZStack {
-                Circle()
-                    .fill(elementColor.opacity(0.3))
-                    .frame(width: 60, height: 60)
-
-                Image(systemName: elementIcon)
-                    .font(.title)
-                    .foregroundColor(elementColor)
-            }
+            CelestialItemSprite(item: item, size: 50)
 
             Text(item.name)
                 .font(.caption)
@@ -1037,18 +1019,9 @@ struct ItemCard: View {
                 .font(.caption2)
                 .foregroundColor(.gray)
         }
-        .frame(width: 80, height: 100)
+        .frame(width: 80, height: 110)
         .background(.ultraThinMaterial)
         .cornerRadius(12)
-    }
-
-    var elementIcon: String {
-        switch item.element {
-        case .fire: return "flame.fill"
-        case .ice: return "snowflake"
-        case .void: return "moon.stars.fill"
-        case .radiant: return "sun.max.fill"
-        }
     }
 }
 
@@ -1142,6 +1115,83 @@ struct GalacticCanvasView: View {
     }
 }
 
+// MARK: - Celestial Item Sprite
+struct CelestialItemSprite: View {
+    let item: CelestialItem
+    let size: CGFloat
+
+    private var baseColor: Color {
+        switch item.element {
+        case .fire: return .orange
+        case .ice: return .cyan
+        case .void: return .indigo
+        case .radiant: return .yellow
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            if item.tier >= 3 {
+                Circle()
+                    .fill(baseColor.opacity(0.3))
+                    .frame(width: size + 10, height: size + 10)
+                    .blur(radius: glowRadius)
+            }
+
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: gradientColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: size, height: size)
+                .shadow(color: baseColor.opacity(0.7), radius: item.tier >= 5 ? 12 : 5)
+
+            Image(systemName: symbolName)
+                .font(.system(size: size * symbolScale))
+                .foregroundColor(.white)
+                .shadow(radius: item.tier > 3 ? 2 : 0)
+
+            if item.tier >= 6 {
+                ForEach(0..<min(item.tier - 5, 3), id: \.self) { i in
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white)
+                        .offset(
+                            x: cos(Double(i) * 2.0) * size / 2.5,
+                            y: sin(Double(i) * 2.0) * size / 2.5
+                        )
+                }
+            }
+        }
+        .frame(width: size + 20, height: size + 20)
+    }
+
+    private var glowRadius: CGFloat { min(2 + CGFloat(item.tier) * 1.5, 15) }
+
+    // Clamped so very high tiers don't overflow the circle.
+    private var symbolScale: CGFloat { min(0.7 + CGFloat(item.tier) * 0.05, 0.95) }
+
+    private var gradientColors: [Color] {
+        switch item.tier {
+        case 0...2: return [baseColor.opacity(0.6), baseColor]
+        case 3...5: return [baseColor, baseColor.opacity(0.8), .white.opacity(0.6)]
+        default: return [baseColor, .white.opacity(0.9), baseColor]
+        }
+    }
+
+    private var symbolName: String {
+        switch item.element {
+        case .fire: return item.tier > 5 ? "flame.fill" : "flame"
+        case .ice: return "snowflake"
+        case .void: return item.tier > 3 ? "moon.stars.fill" : "moon.stars"
+        case .radiant: return "sun.max.fill"
+        }
+    }
+}
+
 struct HexTileView: View {
     let tile: GridTile
     let isSelected: Bool
@@ -1158,23 +1208,40 @@ struct HexTileView: View {
         }) {
             ZStack {
                 HexagonShape()
-                    .stroke(tile.isUnlocked ? (isSelected ? Color.yellow : Color.white.opacity(0.5)) : Color.gray.opacity(0.3), lineWidth: 2)
-                    .background(
-                        HexagonShape()
-                            .fill(tile.isUnlocked ? Color.blue.opacity(0.1) : Color.gray.opacity(0.05))
+                    .fill(
+                        tile.isUnlocked
+                        ? AnyShapeStyle(
+                            LinearGradient(
+                                colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        : AnyShapeStyle(Color.gray.opacity(0.1))
                     )
-                    .frame(width: 60, height: 70)
+                    .overlay(
+                        HexagonShape()
+                            .stroke(
+                                isSelected && tile.isUnlocked && tile.placedItem == nil
+                                ? Color.yellow
+                                : (tile.isUnlocked ? Color.white.opacity(0.4) : Color.gray.opacity(0.3)),
+                                lineWidth: isSelected && tile.isUnlocked ? 2.5 : 1.5
+                            )
+                    )
+                    .frame(width: 65, height: 75)
 
                 if let item = tile.placedItem {
-                    VStack {
-                        Image(systemName: "star.circle.fill")
-                            .foregroundColor(.yellow)
-                        Text(item.name)
-                            .font(.system(size: 8))
-                            .foregroundColor(.white)
-                    }
+                    CelestialItemSprite(item: item, size: 40)
+                        .transition(.scale.combined(with: .opacity))
+                }
+
+                if !tile.isUnlocked {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundColor(.gray.opacity(0.5))
                 }
             }
+            .animation(.spring(response: 0.3), value: tile.placedItem != nil)
         }
     }
 }
@@ -1200,6 +1267,91 @@ struct HexagonShape: Shape {
     }
 }
 
+// MARK: - Particle Effects
+class SupernovaScene: SKScene {
+    override func sceneDidLoad() {
+        backgroundColor = .clear
+        scaleMode = .resizeFill
+        anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+        let emitter = SKEmitterNode()
+        emitter.particleBirthRate = 300
+        emitter.particleLifetime = 1.5
+        emitter.particleSpeed = 200
+        emitter.particleSpeedRange = 100
+        emitter.emissionAngleRange = .pi * 2
+        emitter.particleScale = 0.2
+        emitter.particleScaleSpeed = -0.1
+        emitter.particleColor = .white
+        emitter.particleColorBlendFactor = 0.5
+        emitter.particleTexture = SKTexture(imageNamed: "spark")
+        emitter.position = .zero
+        addChild(emitter)
+
+        let fadeOut = SKAction.fadeAlpha(to: 0, duration: 2.0)
+        emitter.run(fadeOut) { [weak self] in
+            self?.removeAllChildren()
+        }
+    }
+}
+
+struct SupernovaEffect: View {
+    // Built once and held, so SwiftUI re-rendering doesn't restart the burst.
+    @State private var scene: SKScene = {
+        let scene = SupernovaScene()
+        scene.size = UIScreen.main.bounds.size
+        return scene
+    }()
+
+    var body: some View {
+        SpriteView(scene: scene, options: .allowsTransparency)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Cosmic Background
+struct CosmicBackground: View {
+    // Generated once so the starfield doesn't reshuffle every frame.
+    private let stars: [(x: CGFloat, y: CGFloat, r: CGFloat, opacity: Double)] = (0..<80).map { _ in
+        (
+            x: CGFloat.random(in: 0...1),
+            y: CGFloat.random(in: 0...1),
+            r: CGFloat.random(in: 0.5...2.5),
+            opacity: Double.random(in: 0.3...1)
+        )
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            context.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Color(red: 0.02, green: 0.01, blue: 0.15),
+                        Color(red: 0.05, green: 0.02, blue: 0.3)
+                    ]),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: size.width, y: size.height)
+                )
+            )
+
+            for star in stars {
+                context.fill(
+                    Path(ellipseIn: CGRect(
+                        x: star.x * size.width,
+                        y: star.y * size.height,
+                        width: star.r,
+                        height: star.r
+                    )),
+                    with: .color(.white.opacity(star.opacity))
+                )
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
 // MARK: - Prestige View
 struct PrestigeView: View {
     @EnvironmentObject var gameVM: GameViewModel
@@ -1217,14 +1369,14 @@ struct PrestigeView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                LinearGradient(colors: [Color(red: 0.05, green: 0.02, blue: 0.3), Color(red: 0.1, green: 0.05, blue: 0.4)], startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea()
+                CosmicBackground()
 
                 if supernovaAnimation {
-                    // Supernova effect
                     Color.white
+                        .opacity(0.85)
                         .ignoresSafeArea()
                         .transition(.opacity)
+                    SupernovaEffect()
                 }
 
                 VStack(spacing: 30) {
@@ -1297,8 +1449,7 @@ struct ShopView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                LinearGradient(colors: [Color(red: 0.05, green: 0.02, blue: 0.3), Color(red: 0.1, green: 0.05, blue: 0.4)], startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea()
+                CosmicBackground()
 
                 ScrollView {
                     VStack(spacing: 20) {
