@@ -581,6 +581,45 @@ enum GoalCatalog {
     ]
 }
 
+// MARK: - Prestige Upgrades
+/// Permanent perks bought with Galaxy Marks. These are the reason to prestige
+/// more than once — without them a Supernova just resets you with a multiplier.
+struct PrestigeUpgrade: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let maxLevel: Int
+    let baseCost: Int
+
+    func cost(atLevel level: Int) -> Int {
+        baseCost * (level + 1)
+    }
+}
+
+enum UpgradeCatalog {
+    static let all: [PrestigeUpgrade] = [
+        PrestigeUpgrade(id: "production", title: "Stellar Density",
+                        detail: "+25% Stardust production per level",
+                        maxLevel: 10, baseCost: 2),
+        PrestigeUpgrade(id: "shard_yield", title: "Fracture Harvest",
+                        detail: "+100% Starlight Shards from merges per level",
+                        maxLevel: 5, baseCost: 3),
+        PrestigeUpgrade(id: "forge_cost", title: "Efficient Forging",
+                        detail: "-5% Stardust cost to forge items per level",
+                        maxLevel: 8, baseCost: 3),
+        PrestigeUpgrade(id: "starting_items", title: "Seeded Nebula",
+                        detail: "+1 item on the board after each Supernova",
+                        maxLevel: 6, baseCost: 5),
+        PrestigeUpgrade(id: "offline", title: "Long Orbit",
+                        detail: "+2 hours of offline production per level",
+                        maxLevel: 8, baseCost: 4)
+    ]
+
+    static func upgrade(for id: String) -> PrestigeUpgrade? {
+        all.first { $0.id == id }
+    }
+}
+
 // MARK: - Item Catalog
 /// Every merge chain in the game. Each tier has a real name rather than the
 /// previous scheme of appending "II" repeatedly ("Stardust II II II").
@@ -658,6 +697,8 @@ class IdleEngine: ObservableObject {
     @Published var totalProductionPerSec: Double = 0
     private var timer: Timer?
     var permanentMultiplier: Double = 1.0
+    /// Set by the view model from purchased prestige upgrades.
+    var upgradeMultiplier: Double = 1.0
 
     private let tickInterval: TimeInterval = 0.1
 
@@ -689,7 +730,7 @@ class IdleEngine: ObservableObject {
                 base += item.baseProduction * (1.0 + 0.15 * Double(sameElementNeighbours))
             }
         }
-        totalProductionPerSec = base * permanentMultiplier
+        totalProductionPerSec = base * permanentMultiplier * upgradeMultiplier
     }
 
     /// Items placed on the six tiles adjacent to `tile` in the offset hex layout.
@@ -740,8 +781,11 @@ class GameViewModel: ObservableObject {
     @Published var itemsForged: Int = 0
     @Published var highestTierReached: Int = 0
     @Published var claimedGoalIDs: Set<String> = []
+    @Published var upgradeLevels: [String: Int] = [:]
     /// Stardust earned while the app was closed, surfaced once on launch.
     @Published var pendingOfflineEarnings: Double = 0
+    /// Transient banner text describing the most recent merge.
+    @Published var lastMergeSummary: String?
     @Published var hasSeenTutorial: Bool = UserDefaults.standard.bool(forKey: "nf.hasSeenTutorial") {
         didSet { UserDefaults.standard.set(hasSeenTutorial, forKey: "nf.hasSeenTutorial") }
     }
@@ -752,7 +796,7 @@ class GameViewModel: ObservableObject {
 
     /// Offline production is credited on relaunch, but capped so that leaving
     /// the game for weeks doesn't hand back an absurd (and unreadable) balance.
-    private let maxOfflineHours: Double = 8
+    private let baseOfflineHours: Double = 8
 
     /// Cost in Starlight Shards to unlock one additional grid tile. Starts
     /// cheap so the board can grow before the first prestige is reachable.
@@ -768,7 +812,7 @@ class GameViewModel: ObservableObject {
     /// only renewable source of items — without it the board can only shrink
     /// (merging consumes two to make one) and prestige is unreachable.
     var forgeItemCost: Double {
-        25 * pow(1.18, Double(itemsForged))
+        25 * pow(1.18, Double(itemsForged)) * forgeCostFactor
     }
 
     /// Placed items required before a Supernova can be triggered.
@@ -787,6 +831,7 @@ class GameViewModel: ObservableObject {
         static let itemsForged = "nf.itemsForged"
         static let highestTierReached = "nf.highestTierReached"
         static let claimedGoalIDs = "nf.claimedGoalIDs"
+        static let upgradeLevels = "nf.upgradeLevels"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
     }
@@ -810,6 +855,9 @@ class GameViewModel: ObservableObject {
         boardItems = ["fire_basic", "fire_basic", "ice_basic",
                       "ice_basic", "void_basic", "void_basic"]
             .compactMap { ItemCatalog.makeItem(chainID: $0) }
+        for _ in 0..<bonusStartingItems {
+            boardItems.append(randomStarterItem())
+        }
 
         // Initialize 5x5 hex grid
         gridTiles = (0..<5).map { row in
@@ -831,9 +879,12 @@ class GameViewModel: ObservableObject {
         boardItems.append(merged)
 
         // Merging is the main source of Starlight Shards; higher tiers pay more.
-        starlightShards += max(1, merged.tier * 2)
+        let shardsGained = max(1, merged.tier * 2) * shardYieldMultiplier
+        starlightShards += shardsGained
         totalMerges += 1
         highestTierReached = max(highestTierReached, merged.tier)
+
+        announceMerge("\(merged.name)   +\(shardsGained)")
         celestialRank = 1 + totalMerges / 10
 
         HapticManager.shared.mergeSuccess()
@@ -888,6 +939,71 @@ class GameViewModel: ObservableObject {
         HapticManager.shared.itemPlace()
         saveGameState()
         return true
+    }
+
+    // MARK: Upgrade effects
+
+    func upgradeLevel(_ id: String) -> Int {
+        upgradeLevels[id] ?? 0
+    }
+
+    /// Multiplier applied on top of the prestige multiplier.
+    var upgradeProductionMultiplier: Double {
+        1.0 + 0.25 * Double(upgradeLevel("production"))
+    }
+
+    /// Shards from a merge are multiplied by this.
+    var shardYieldMultiplier: Int {
+        1 + upgradeLevel("shard_yield")
+    }
+
+    /// Fraction of the base forge price actually charged.
+    var forgeCostFactor: Double {
+        max(0.5, 1.0 - 0.05 * Double(upgradeLevel("forge_cost")))
+    }
+
+    /// Extra items granted when a run begins.
+    var bonusStartingItems: Int {
+        upgradeLevel("starting_items")
+    }
+
+    var offlineCapHours: Double {
+        baseOfflineHours + 2 * Double(upgradeLevel("offline"))
+    }
+
+    @discardableResult
+    func purchaseUpgrade(_ upgrade: PrestigeUpgrade) -> Bool {
+        let level = upgradeLevel(upgrade.id)
+        guard level < upgrade.maxLevel else { return false }
+        let price = upgrade.cost(atLevel: level)
+        guard galaxyMarks >= price else { return false }
+
+        galaxyMarks -= price
+        upgradeLevels[upgrade.id] = level + 1
+
+        // Production upgrades change output immediately.
+        syncUpgradeEffects()
+        HapticManager.shared.mergeSuccess()
+        saveGameState()
+        return true
+    }
+
+    /// Shows a short-lived banner describing the last merge, then clears it.
+    private func announceMerge(_ summary: String) {
+        lastMergeSummary = summary
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            // Only clear if a newer merge hasn't replaced it in the meantime.
+            if self?.lastMergeSummary == summary {
+                self?.lastMergeSummary = nil
+            }
+        }
+    }
+
+    /// Pushes upgrade-derived values into the idle engine and recomputes output.
+    /// Must run after any change to `upgradeLevels`, including on load.
+    func syncUpgradeEffects() {
+        idleEngine.upgradeMultiplier = upgradeProductionMultiplier
+        idleEngine.recalculate(from: gridTiles)
     }
 
     /// Goals finished but not yet collected.
@@ -1011,6 +1127,7 @@ class GameViewModel: ObservableObject {
         defaults.set(itemsForged, forKey: DefaultsKey.itemsForged)
         defaults.set(highestTierReached, forKey: DefaultsKey.highestTierReached)
         defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
+        defaults.set(upgradeLevels, forKey: DefaultsKey.upgradeLevels)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
 
         // Tiles can be unlocked by spending shards, so the unlocked set has to
@@ -1081,6 +1198,7 @@ class GameViewModel: ObservableObject {
         itemsForged = defaults.integer(forKey: DefaultsKey.itemsForged)
         highestTierReached = defaults.integer(forKey: DefaultsKey.highestTierReached)
         claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
+        upgradeLevels = defaults.dictionary(forKey: DefaultsKey.upgradeLevels) as? [String: Int] ?? [:]
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
 
         // Saves written before tile unlocking existed have no stored set, so
@@ -1140,12 +1258,12 @@ class GameViewModel: ObservableObject {
             print("Failed to load game state: \(error)")
         }
 
-        idleEngine.recalculate(from: gridTiles)
+        syncUpgradeEffects()
 
         // Credit production earned while the app was closed, capped so a long
         // absence can't return a nonsensical balance.
         if let lastSave = defaults.object(forKey: DefaultsKey.lastSaveDate) as? Date {
-            let elapsed = min(Date().timeIntervalSince(lastSave), maxOfflineHours * 3600)
+            let elapsed = min(Date().timeIntervalSince(lastSave), offlineCapHours * 3600)
             let earned = idleEngine.totalProductionPerSec * elapsed
             // Only worth interrupting the player for a meaningful amount.
             if elapsed > 60, earned > 1 {
@@ -1355,6 +1473,23 @@ struct MergeBoardView: View {
                     }
                 }
             }
+            .overlay(alignment: .top) {
+                if let summary = gameVM.lastMergeSummary {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                        Text(summary)
+                            .font(.subheadline.bold())
+                    }
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(Color.yellow))
+                    .shadow(radius: 8)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.35), value: gameVM.lastMergeSummary)
             .navigationTitle("Merge Board")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -1378,6 +1513,57 @@ struct MergeBoardView: View {
                 TutorialView()
             }
         }
+    }
+}
+
+// MARK: - Upgrade Row
+struct UpgradeRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let upgrade: PrestigeUpgrade
+
+    private var level: Int { gameVM.upgradeLevel(upgrade.id) }
+    private var maxed: Bool { level >= upgrade.maxLevel }
+    private var price: Int { upgrade.cost(atLevel: level) }
+    private var affordable: Bool { gameVM.galaxyMarks >= price }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(upgrade.title)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("Lv \(level)/\(upgrade.maxLevel)")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                Text(upgrade.detail)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            if maxed {
+                Text("MAX")
+                    .font(.caption.bold())
+                    .foregroundColor(.green)
+            } else {
+                Button {
+                    gameVM.purchaseUpgrade(upgrade)
+                } label: {
+                    Label("\(price)", systemImage: "burst.fill")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(!affordable)
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(12)
+        .opacity(maxed ? 0.65 : 1)
     }
 }
 
@@ -2028,44 +2214,68 @@ struct PrestigeView: View {
                     SupernovaEffect()
                 }
 
-                VStack(spacing: 30) {
-                    Text(placedCount >= GameViewModel.prestigeRequirement ? "Supernova Ready" : "Supernova Locked")
-                        .font(.largeTitle.bold())
-                        .foregroundColor(.white)
+                ScrollView {
+                    VStack(spacing: 22) {
+                        Text(placedCount >= GameViewModel.prestigeRequirement ? "Supernova Ready" : "Supernova Locked")
+                            .font(.title.bold())
+                            .foregroundColor(.white)
 
-                    VStack {
-                        Text("\(placedCount) / \(GameViewModel.prestigeRequirement) items placed")
-                            .foregroundColor(.white.opacity(0.8))
-                        Text("Potential Galaxy Marks: \(potentialMarks)")
-                            .font(.title2)
-                            .foregroundColor(.yellow)
-                        Text("Celestial Rank: \(gameVM.celestialRank)")
-                            .foregroundColor(.purple)
-                    }
-                    .padding()
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(15)
+                        VStack {
+                            Text("\(placedCount) / \(GameViewModel.prestigeRequirement) items placed")
+                                .foregroundColor(.white.opacity(0.8))
+                            Text("Potential Galaxy Marks: \(potentialMarks)")
+                                .font(.title2)
+                                .foregroundColor(.yellow)
+                            Text("Celestial Rank: \(gameVM.celestialRank)")
+                                .foregroundColor(.purple)
+                        }
+                        .padding()
+                        .background(.ultraThinMaterial)
+                        .cornerRadius(15)
 
-                    Text("Resetting will destroy all items in this galaxy but grant permanent production bonuses and unlock new content.")
-                        .multilineTextAlignment(.center)
-                        .foregroundColor(.white.opacity(0.7))
+                        Text("Resetting destroys everything in this galaxy, but Galaxy Marks are permanent — spend them below.")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.horizontal)
+
+                        Button(action: {
+                            showConfirmation = true
+                        }) {
+                            Text("Trigger Supernova")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(
+                                    LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)
+                                )
+                                .cornerRadius(15)
+                        }
+                        .disabled(placedCount < GameViewModel.prestigeRequirement)
                         .padding(.horizontal)
 
-                    Button(action: {
-                        showConfirmation = true
-                    }) {
-                        Text("Trigger Supernova")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(
-                                LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(15)
+                        Divider().background(Color.white.opacity(0.3))
+
+                        HStack {
+                            Text("Permanent Upgrades")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                            Spacer()
+                            Label("\(gameVM.galaxyMarks)", systemImage: "burst.fill")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.yellow)
+                        }
+                        .padding(.horizontal)
+
+                        VStack(spacing: 10) {
+                            ForEach(UpgradeCatalog.all) { upgrade in
+                                UpgradeRow(upgrade: upgrade)
+                            }
+                        }
+                        .padding(.horizontal)
                     }
-                    .disabled(placedCount < GameViewModel.prestigeRequirement)
-                    .padding(.horizontal)
+                    .padding(.vertical)
                 }
             }
             .alert("Confirm Supernova", isPresented: $showConfirmation) {
