@@ -497,22 +497,160 @@ struct CelestialItem: Identifiable, Codable {
     }
 
     static func merge(item1: CelestialItem, item2: CelestialItem) -> CelestialItem? {
-        guard item1.chainID == item2.chainID && item1.tier == item2.tier else { return nil }
-        // Simulate next tier creation
+        guard item1.chainID == item2.chainID, item1.tier == item2.tier else { return nil }
+        guard let chain = ItemCatalog.chain(for: item1.chainID) else { return nil }
+
+        let nextTier = item1.tier + 1
+        // The chain tops out; merging past its final form isn't possible.
+        guard nextTier < chain.tierNames.count else { return nil }
+
         return CelestialItem(
             id: UUID(),
-            chainID: item1.chainID,
-            tier: item1.tier + 1,
-            element: item1.element,
-            baseProduction: item1.baseProduction * 3,
-            name: "\(item1.name) II",
+            chainID: chain.id,
+            tier: nextTier,
+            element: chain.element,
+            baseProduction: chain.production(atTier: nextTier),
+            name: chain.tierNames[nextTier],
             position: nil
         )
+    }
+
+    /// Whether this item has reached the end of its chain.
+    var isMaxTier: Bool {
+        guard let chain = ItemCatalog.chain(for: chainID) else { return false }
+        return tier >= chain.tierNames.count - 1
     }
 }
 
 enum Element: String, CaseIterable, Codable {
     case fire, ice, void, radiant
+
+    var displayName: String {
+        switch self {
+        case .fire: return "Fire"
+        case .ice: return "Ice"
+        case .void: return "Void"
+        case .radiant: return "Radiant"
+        }
+    }
+}
+
+// MARK: - Goals
+/// A milestone the player works toward. Progress is derived from game state
+/// rather than tracked separately, so goals can never desync from reality.
+struct Goal: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let target: Int
+    let shardReward: Int
+    let gemReward: Int
+    let progress: (GameViewModel) -> Int
+
+    func currentProgress(_ vm: GameViewModel) -> Int {
+        min(progress(vm), target)
+    }
+
+    func isComplete(_ vm: GameViewModel) -> Bool {
+        progress(vm) >= target
+    }
+}
+
+enum GoalCatalog {
+    static let all: [Goal] = [
+        Goal(id: "merge_1", title: "First Fusion", detail: "Merge two items together",
+             target: 1, shardReward: 3, gemReward: 0) { $0.totalMerges },
+        Goal(id: "place_5", title: "Taking Shape", detail: "Place 5 items in your galaxy",
+             target: 5, shardReward: 5, gemReward: 0) { vm in
+                 vm.gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count },
+        Goal(id: "merge_10", title: "Forge Master", detail: "Complete 10 merges",
+             target: 10, shardReward: 10, gemReward: 1) { $0.totalMerges },
+        Goal(id: "tier_3", title: "Rising Power", detail: "Create a tier 3 item",
+             target: 1, shardReward: 15, gemReward: 2) { vm in
+                 vm.highestTierReached >= 3 ? 1 : 0 },
+        Goal(id: "place_10", title: "Constellation", detail: "Place 10 items at once",
+             target: 10, shardReward: 20, gemReward: 2) { vm in
+                 vm.gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count },
+        Goal(id: "prestige_1", title: "Reborn", detail: "Trigger your first Supernova",
+             target: 1, shardReward: 25, gemReward: 5) { $0.galaxyMarks > 0 ? 1 : 0 },
+        Goal(id: "tier_5", title: "Stellar Architect", detail: "Create a tier 5 item",
+             target: 1, shardReward: 40, gemReward: 5) { vm in
+                 vm.highestTierReached >= 5 ? 1 : 0 },
+        Goal(id: "merge_100", title: "Century", detail: "Complete 100 merges",
+             target: 100, shardReward: 60, gemReward: 10) { $0.totalMerges }
+    ]
+}
+
+// MARK: - Item Catalog
+/// Every merge chain in the game. Each tier has a real name rather than the
+/// previous scheme of appending "II" repeatedly ("Stardust II II II").
+struct ItemChain {
+    let id: String
+    let element: Element
+    let baseProduction: Double
+    let tierNames: [String]
+
+    /// Production triples with each tier, matching the old merge maths.
+    func production(atTier tier: Int) -> Double {
+        baseProduction * pow(3.0, Double(tier))
+    }
+}
+
+enum ItemCatalog {
+    static let chains: [ItemChain] = [
+        ItemChain(
+            id: "fire_basic",
+            element: .fire,
+            baseProduction: 1.0,
+            tierNames: ["Stardust", "Ember", "Cinder", "Flare",
+                        "Solar Wisp", "Corona", "Sunforge", "Helios Core"]
+        ),
+        ItemChain(
+            id: "ice_basic",
+            element: .ice,
+            baseProduction: 1.0,
+            tierNames: ["Frost Dust", "Rime", "Glacier Shard", "Comet",
+                        "Ice Moon", "Cryosphere", "Frozen Titan", "Absolute Zero"]
+        ),
+        ItemChain(
+            id: "void_basic",
+            element: .void,
+            baseProduction: 1.5,
+            tierNames: ["Dark Matter", "Shadow Wisp", "Null Fragment", "Void Rift",
+                        "Singularity", "Event Horizon", "Dark Star", "Oblivion"]
+        ),
+        ItemChain(
+            id: "radiant_basic",
+            element: .radiant,
+            baseProduction: 2.0,
+            tierNames: ["Sunmote", "Gleam", "Prism", "Radiant Core",
+                        "Starlight", "Quasar", "Pulsar", "Lumen Eternal"]
+        )
+    ]
+
+    static func chain(for id: String) -> ItemChain? {
+        chains.first { $0.id == id }
+    }
+
+    /// Canonical name for a chain/tier pair, used to repair names loaded from
+    /// saves written before the catalog existed.
+    static func name(chainID: String, tier: Int) -> String? {
+        guard let chain = chain(for: chainID), chain.tierNames.indices.contains(tier) else { return nil }
+        return chain.tierNames[tier]
+    }
+
+    static func makeItem(chainID: String, tier: Int = 0) -> CelestialItem? {
+        guard let chain = chain(for: chainID), chain.tierNames.indices.contains(tier) else { return nil }
+        return CelestialItem(
+            id: UUID(),
+            chainID: chain.id,
+            tier: tier,
+            element: chain.element,
+            baseProduction: chain.production(atTier: tier),
+            name: chain.tierNames[tier],
+            position: nil
+        )
+    }
 }
 
 // MARK: - Idle Engine
@@ -600,6 +738,10 @@ class GameViewModel: ObservableObject {
 
     @Published var totalMerges: Int = 0
     @Published var itemsForged: Int = 0
+    @Published var highestTierReached: Int = 0
+    @Published var claimedGoalIDs: Set<String> = []
+    /// Stardust earned while the app was closed, surfaced once on launch.
+    @Published var pendingOfflineEarnings: Double = 0
     @Published var hasSeenTutorial: Bool = UserDefaults.standard.bool(forKey: "nf.hasSeenTutorial") {
         didSet { UserDefaults.standard.set(hasSeenTutorial, forKey: "nf.hasSeenTutorial") }
     }
@@ -643,6 +785,8 @@ class GameViewModel: ObservableObject {
         static let hasPrestiged = "nf.hasPrestiged"
         static let totalMerges = "nf.totalMerges"
         static let itemsForged = "nf.itemsForged"
+        static let highestTierReached = "nf.highestTierReached"
+        static let claimedGoalIDs = "nf.claimedGoalIDs"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
     }
@@ -662,15 +806,10 @@ class GameViewModel: ObservableObject {
     }
 
     func initializeBoard() {
-        // Starting items
-        boardItems = [
-            CelestialItem(id: UUID(), chainID: "fire_basic", tier: 0, element: .fire, baseProduction: 1, name: "Stardust", position: nil),
-            CelestialItem(id: UUID(), chainID: "fire_basic", tier: 0, element: .fire, baseProduction: 1, name: "Stardust", position: nil),
-            CelestialItem(id: UUID(), chainID: "ice_basic", tier: 0, element: .ice, baseProduction: 1, name: "Frost Dust", position: nil),
-            CelestialItem(id: UUID(), chainID: "ice_basic", tier: 0, element: .ice, baseProduction: 1, name: "Frost Dust", position: nil),
-            CelestialItem(id: UUID(), chainID: "void_basic", tier: 0, element: .void, baseProduction: 1.5, name: "Dark Matter", position: nil),
-            CelestialItem(id: UUID(), chainID: "void_basic", tier: 0, element: .void, baseProduction: 1.5, name: "Dark Matter", position: nil),
-        ]
+        // Start with matched pairs so the first merge is immediately possible.
+        boardItems = ["fire_basic", "fire_basic", "ice_basic",
+                      "ice_basic", "void_basic", "void_basic"]
+            .compactMap { ItemCatalog.makeItem(chainID: $0) }
 
         // Initialize 5x5 hex grid
         gridTiles = (0..<5).map { row in
@@ -694,6 +833,7 @@ class GameViewModel: ObservableObject {
         // Merging is the main source of Starlight Shards; higher tiers pay more.
         starlightShards += max(1, merged.tier * 2)
         totalMerges += 1
+        highestTierReached = max(highestTierReached, merged.tier)
         celestialRank = 1 + totalMerges / 10
 
         HapticManager.shared.mergeSuccess()
@@ -718,27 +858,13 @@ class GameViewModel: ObservableObject {
         return false
     }
 
-    /// A fresh tier-0 item. Weighted toward the cheaper elements so early
-    /// boards tend to contain matching pairs.
+    /// A fresh tier-0 item. Common chains are weighted higher so early boards
+    /// tend to contain matching pairs the player can actually merge.
     private func randomStarterItem() -> CelestialItem {
-        let choices: [(chain: String, element: Element, production: Double, name: String)] = [
-            ("fire_basic", .fire, 1, "Stardust"),
-            ("fire_basic", .fire, 1, "Stardust"),
-            ("ice_basic", .ice, 1, "Frost Dust"),
-            ("ice_basic", .ice, 1, "Frost Dust"),
-            ("void_basic", .void, 1.5, "Dark Matter"),
-            ("radiant_basic", .radiant, 2, "Sunmote")
-        ]
-        let pick = choices.randomElement()!
-        return CelestialItem(
-            id: UUID(),
-            chainID: pick.chain,
-            tier: 0,
-            element: pick.element,
-            baseProduction: pick.production,
-            name: pick.name,
-            position: nil
-        )
+        let weighted = ["fire_basic", "fire_basic", "ice_basic", "ice_basic",
+                        "void_basic", "radiant_basic"]
+        let chainID = weighted.randomElement()!
+        return ItemCatalog.makeItem(chainID: chainID) ?? ItemCatalog.makeItem(chainID: "fire_basic")!
     }
 
     /// Spends Stardust to forge a new item — the main progression loop.
@@ -760,6 +886,22 @@ class GameViewModel: ObservableObject {
         nebulaGems -= itemSummonCost
         boardItems.append(randomStarterItem())
         HapticManager.shared.itemPlace()
+        saveGameState()
+        return true
+    }
+
+    /// Goals finished but not yet collected.
+    var claimableGoals: [Goal] {
+        GoalCatalog.all.filter { $0.isComplete(self) && !claimedGoalIDs.contains($0.id) }
+    }
+
+    @discardableResult
+    func claimGoal(_ goal: Goal) -> Bool {
+        guard goal.isComplete(self), !claimedGoalIDs.contains(goal.id) else { return false }
+        claimedGoalIDs.insert(goal.id)
+        starlightShards += goal.shardReward
+        nebulaGems += goal.gemReward
+        HapticManager.shared.mergeSuccess()
         saveGameState()
         return true
     }
@@ -867,6 +1009,8 @@ class GameViewModel: ObservableObject {
         defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
         defaults.set(totalMerges, forKey: DefaultsKey.totalMerges)
         defaults.set(itemsForged, forKey: DefaultsKey.itemsForged)
+        defaults.set(highestTierReached, forKey: DefaultsKey.highestTierReached)
+        defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
 
         // Tiles can be unlocked by spending shards, so the unlocked set has to
@@ -935,6 +1079,8 @@ class GameViewModel: ObservableObject {
         hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
         totalMerges = defaults.integer(forKey: DefaultsKey.totalMerges)
         itemsForged = defaults.integer(forKey: DefaultsKey.itemsForged)
+        highestTierReached = defaults.integer(forKey: DefaultsKey.highestTierReached)
+        claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
 
         // Saves written before tile unlocking existed have no stored set, so
@@ -963,13 +1109,18 @@ class GameViewModel: ObservableObject {
                       let name = entity.name,
                       let element = Element(rawValue: elementStr) else { continue }
 
+                let tier = Int(entity.tier)
+                // Saves written before the item catalog carry generated names
+                // like "Stardust II II"; prefer the canonical name when known.
+                let canonicalName = ItemCatalog.name(chainID: chainID, tier: tier) ?? name
+
                 let item = CelestialItem(
                     id: id,
                     chainID: chainID,
-                    tier: Int(entity.tier),
+                    tier: tier,
                     element: element,
                     baseProduction: entity.baseProduction,
-                    name: name,
+                    name: canonicalName,
                     position: entity.isPlaced ? (Int(entity.gridRow), Int(entity.gridCol)) : nil
                 )
 
@@ -995,8 +1146,13 @@ class GameViewModel: ObservableObject {
         // absence can't return a nonsensical balance.
         if let lastSave = defaults.object(forKey: DefaultsKey.lastSaveDate) as? Date {
             let elapsed = min(Date().timeIntervalSince(lastSave), maxOfflineHours * 3600)
-            if elapsed > 0 {
-                stardust += idleEngine.totalProductionPerSec * elapsed
+            let earned = idleEngine.totalProductionPerSec * elapsed
+            // Only worth interrupting the player for a meaningful amount.
+            if elapsed > 60, earned > 1 {
+                stardust += earned
+                pendingOfflineEarnings = earned
+            } else if earned > 0 {
+                stardust += earned
             }
         }
 
@@ -1009,6 +1165,7 @@ struct ContentView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @State private var selectedTab = 0
     @State private var showTutorial = false
+    @State private var showOfflineEarnings = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -1030,11 +1187,18 @@ struct ContentView: View {
                 }
                 .tag(2)
 
+            GoalsView()
+                .tabItem {
+                    Label("Goals", systemImage: "target")
+                }
+                .badge(gameVM.claimableGoals.count)
+                .tag(3)
+
             ShopView()
                 .tabItem {
                     Label("Shop", systemImage: "cart.fill")
                 }
-                .tag(3)
+                .tag(4)
         }
         .tint(.purple)
         .sheet(isPresented: $showTutorial, onDismiss: {
@@ -1042,9 +1206,16 @@ struct ContentView: View {
         }) {
             TutorialView()
         }
+        .sheet(isPresented: $showOfflineEarnings, onDismiss: {
+            gameVM.pendingOfflineEarnings = 0
+        }) {
+            OfflineEarningsView(amount: gameVM.pendingOfflineEarnings)
+        }
         .onAppear {
             if !gameVM.hasSeenTutorial {
                 showTutorial = true
+            } else if gameVM.pendingOfflineEarnings > 0 {
+                showOfflineEarnings = true
             }
         }
     }
@@ -1206,6 +1377,151 @@ struct MergeBoardView: View {
             .sheet(isPresented: $showTutorial) {
                 TutorialView()
             }
+        }
+    }
+}
+
+// MARK: - Goals View
+struct GoalsView: View {
+    @EnvironmentObject var gameVM: GameViewModel
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                CosmicBackground()
+
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(GoalCatalog.all) { goal in
+                            GoalRow(goal: goal)
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Goals")
+        }
+    }
+}
+
+struct GoalRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let goal: Goal
+
+    private var claimed: Bool { gameVM.claimedGoalIDs.contains(goal.id) }
+    private var complete: Bool { goal.isComplete(gameVM) }
+    private var progress: Int { goal.currentProgress(gameVM) }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: claimed ? "checkmark.seal.fill" : (complete ? "gift.fill" : "target"))
+                .font(.title2)
+                .foregroundColor(claimed ? .green : (complete ? .yellow : .white.opacity(0.5)))
+                .frame(width: 32)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(goal.title)
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                Text(goal.detail)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+
+                if !claimed {
+                    ProgressView(value: Double(progress), total: Double(goal.target))
+                        .tint(complete ? .yellow : .blue)
+                    Text("\(progress) / \(goal.target)")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+
+                HStack(spacing: 10) {
+                    if goal.shardReward > 0 {
+                        Label("\(goal.shardReward)", systemImage: "sparkle")
+                            .font(.caption2)
+                            .foregroundColor(.blue)
+                    }
+                    if goal.gemReward > 0 {
+                        Label("\(goal.gemReward)", systemImage: "diamond.fill")
+                            .font(.caption2)
+                            .foregroundColor(.purple)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if claimed {
+                Text("Claimed")
+                    .font(.caption2)
+                    .foregroundColor(.green)
+            } else if complete {
+                Button("Claim") {
+                    gameVM.claimGoal(goal)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.yellow)
+                .font(.caption)
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(14)
+        .opacity(claimed ? 0.6 : 1)
+    }
+}
+
+// MARK: - Offline Earnings
+struct OfflineEarningsView: View {
+    @Environment(\.dismiss) var dismiss
+    let amount: Double
+
+    var body: some View {
+        ZStack {
+            CosmicBackground()
+
+            VStack(spacing: 20) {
+                Image(systemName: "moon.stars.fill")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.yellow, .orange)
+
+                Text("Welcome Back")
+                    .font(.largeTitle.bold())
+                    .foregroundColor(.white)
+
+                Text("Your galaxy kept working while you were away.")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(.yellow)
+                    Text("+\(abbreviatedNumber(amount))")
+                        .font(.title.bold())
+                        .foregroundColor(.white)
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .cornerRadius(16)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Collect")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(
+                            LinearGradient(colors: [.purple, .blue],
+                                           startPoint: .leading, endPoint: .trailing)
+                        )
+                        .cornerRadius(15)
+                }
+                .padding(.horizontal, 40)
+            }
+            .padding()
         }
     }
 }
@@ -1444,6 +1760,7 @@ struct GalacticCanvasView: View {
 struct CelestialItemSprite: View {
     let item: CelestialItem
     let size: CGFloat
+    @State private var pulse = false
 
     private var baseColor: Color {
         switch item.element {
@@ -1461,6 +1778,13 @@ struct CelestialItemSprite: View {
                     .fill(baseColor.opacity(0.3))
                     .frame(width: size + 10, height: size + 10)
                     .blur(radius: glowRadius)
+                    // Higher tiers breathe, so power reads at a glance.
+                    .scaleEffect(pulse ? 1.12 : 0.95)
+                    .animation(
+                        .easeInOut(duration: 1.6).repeatForever(autoreverses: true),
+                        value: pulse
+                    )
+                    .onAppear { pulse = true }
             }
 
             Circle()
