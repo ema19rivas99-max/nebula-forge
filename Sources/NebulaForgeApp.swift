@@ -599,6 +599,10 @@ class GameViewModel: ObservableObject {
     @Published var celestialRank: Int = 1
 
     @Published var totalMerges: Int = 0
+    @Published var itemsForged: Int = 0
+    @Published var hasSeenTutorial: Bool = UserDefaults.standard.bool(forKey: "nf.hasSeenTutorial") {
+        didSet { UserDefaults.standard.set(hasSeenTutorial, forKey: "nf.hasSeenTutorial") }
+    }
 
     let idleEngine = IdleEngine()
     private let persistence = PersistenceController.shared
@@ -608,14 +612,25 @@ class GameViewModel: ObservableObject {
     /// the game for weeks doesn't hand back an absurd (and unreadable) balance.
     private let maxOfflineHours: Double = 8
 
-    /// Cost in Starlight Shards to unlock one additional grid tile.
+    /// Cost in Starlight Shards to unlock one additional grid tile. Starts
+    /// cheap so the board can grow before the first prestige is reachable.
     var tileUnlockCost: Int {
         let unlocked = gridTiles.flatMap { $0 }.filter { $0.isUnlocked }.count
-        return unlocked * 5
+        return max(5, (unlocked - 5) * 5)
     }
 
     /// Cost in Nebula Gems to conjure a fresh tier-0 item onto the board.
     let itemSummonCost = 5
+
+    /// Stardust price of forging a new item. This is the primary sink and the
+    /// only renewable source of items — without it the board can only shrink
+    /// (merging consumes two to make one) and prestige is unreachable.
+    var forgeItemCost: Double {
+        25 * pow(1.18, Double(itemsForged))
+    }
+
+    /// Placed items required before a Supernova can be triggered.
+    static let prestigeRequirement = 10
 
     private enum DefaultsKey {
         static let hasSavedState = "nf.hasSavedState"
@@ -627,6 +642,7 @@ class GameViewModel: ObservableObject {
         static let permanentMultiplier = "nf.permanentMultiplier"
         static let hasPrestiged = "nf.hasPrestiged"
         static let totalMerges = "nf.totalMerges"
+        static let itemsForged = "nf.itemsForged"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
     }
@@ -676,7 +692,7 @@ class GameViewModel: ObservableObject {
         boardItems.append(merged)
 
         // Merging is the main source of Starlight Shards; higher tiers pay more.
-        starlightShards += merged.tier
+        starlightShards += max(1, merged.tier * 2)
         totalMerges += 1
         celestialRank = 1 + totalMerges / 10
 
@@ -702,35 +718,77 @@ class GameViewModel: ObservableObject {
         return false
     }
 
-    /// Spends Nebula Gems to add a random tier-0 item to the merge board.
-    @discardableResult
-    func summonItem() -> Bool {
-        guard nebulaGems >= itemSummonCost else { return false }
-        nebulaGems -= itemSummonCost
-
+    /// A fresh tier-0 item. Weighted toward the cheaper elements so early
+    /// boards tend to contain matching pairs.
+    private func randomStarterItem() -> CelestialItem {
         let choices: [(chain: String, element: Element, production: Double, name: String)] = [
             ("fire_basic", .fire, 1, "Stardust"),
+            ("fire_basic", .fire, 1, "Stardust"),
+            ("ice_basic", .ice, 1, "Frost Dust"),
             ("ice_basic", .ice, 1, "Frost Dust"),
             ("void_basic", .void, 1.5, "Dark Matter"),
             ("radiant_basic", .radiant, 2, "Sunmote")
         ]
         let pick = choices.randomElement()!
-
-        boardItems.append(
-            CelestialItem(
-                id: UUID(),
-                chainID: pick.chain,
-                tier: 0,
-                element: pick.element,
-                baseProduction: pick.production,
-                name: pick.name,
-                position: nil
-            )
+        return CelestialItem(
+            id: UUID(),
+            chainID: pick.chain,
+            tier: 0,
+            element: pick.element,
+            baseProduction: pick.production,
+            name: pick.name,
+            position: nil
         )
+    }
 
+    /// Spends Stardust to forge a new item — the main progression loop.
+    @discardableResult
+    func forgeItem() -> Bool {
+        guard stardust >= forgeItemCost else { return false }
+        stardust -= forgeItemCost
+        itemsForged += 1
+        boardItems.append(randomStarterItem())
         HapticManager.shared.itemPlace()
         saveGameState()
         return true
+    }
+
+    /// Spends Nebula Gems to add a random tier-0 item to the merge board.
+    @discardableResult
+    func summonItem() -> Bool {
+        guard nebulaGems >= itemSummonCost else { return false }
+        nebulaGems -= itemSummonCost
+        boardItems.append(randomStarterItem())
+        HapticManager.shared.itemPlace()
+        saveGameState()
+        return true
+    }
+
+    /// Items on the board that could merge with `item`.
+    func mergeCandidates(for item: CelestialItem) -> Set<UUID> {
+        Set(
+            boardItems
+                .filter { $0.id != item.id && $0.chainID == item.chainID && $0.tier == item.tier }
+                .map(\.id)
+        )
+    }
+
+    /// The single most useful next action, surfaced as a hint in the UI.
+    var nextStepHint: String {
+        let placed = gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count
+        if boardItems.isEmpty && placed == 0 {
+            return "Forge an item to begin."
+        }
+        if !boardItems.isEmpty && placed == 0 {
+            return "Place an item on your Galaxy grid to start earning Stardust."
+        }
+        if boardItems.count >= 2 {
+            return "Tap two matching items to merge them into a stronger one."
+        }
+        if placed >= Self.prestigeRequirement {
+            return "You can trigger a Supernova on the Nova tab."
+        }
+        return "Forge more items, then place them in your Galaxy."
     }
 
     func placeItemOnGrid(_ item: CelestialItem, row: Int, col: Int) -> Bool {
@@ -764,7 +822,7 @@ class GameViewModel: ObservableObject {
     func triggerSupernova() -> Bool {
         // Check if board has enough placed items
         let placedCount = gridTiles.flatMap { $0 }.filter { $0.placedItem != nil }.count
-        guard placedCount >= 10 else { return false }
+        guard placedCount >= Self.prestigeRequirement else { return false }
 
         // Calculate Galaxy Marks earned
         let earnedMarks = placedCount / 5
@@ -808,6 +866,7 @@ class GameViewModel: ObservableObject {
         defaults.set(idleEngine.permanentMultiplier, forKey: DefaultsKey.permanentMultiplier)
         defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
         defaults.set(totalMerges, forKey: DefaultsKey.totalMerges)
+        defaults.set(itemsForged, forKey: DefaultsKey.itemsForged)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
 
         // Tiles can be unlocked by spending shards, so the unlocked set has to
@@ -875,6 +934,7 @@ class GameViewModel: ObservableObject {
         celestialRank = max(1, defaults.integer(forKey: DefaultsKey.celestialRank))
         hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
         totalMerges = defaults.integer(forKey: DefaultsKey.totalMerges)
+        itemsForged = defaults.integer(forKey: DefaultsKey.itemsForged)
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
 
         // Saves written before tile unlocking existed have no stored set, so
@@ -948,6 +1008,7 @@ class GameViewModel: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @State private var selectedTab = 0
+    @State private var showTutorial = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -976,24 +1037,64 @@ struct ContentView: View {
                 .tag(3)
         }
         .tint(.purple)
+        .sheet(isPresented: $showTutorial, onDismiss: {
+            gameVM.hasSeenTutorial = true
+        }) {
+            TutorialView()
+        }
+        .onAppear {
+            if !gameVM.hasSeenTutorial {
+                showTutorial = true
+            }
+        }
     }
 }
 
 // MARK: - Merge Board View
 struct MergeBoardView: View {
     @EnvironmentObject var gameVM: GameViewModel
-    @State private var draggedItem: CelestialItem?
-    @State private var dropTarget: CelestialItem?
-    @State private var mergeEffect = false
+    // Tap-to-select rather than drag-and-drop: drag gestures fight the
+    // enclosing ScrollView on iPhone and were effectively unusable.
+    @State private var selectedItemID: UUID?
+    @State private var showTutorial = false
 
     let columns = [GridItem(.adaptive(minimum: 80))]
+
+    private var selectedItem: CelestialItem? {
+        gameVM.boardItems.first { $0.id == selectedItemID }
+    }
+
+    private var mergeableIDs: Set<UUID> {
+        guard let selectedItem else { return [] }
+        return gameVM.mergeCandidates(for: selectedItem)
+    }
+
+    private func handleTap(on item: CelestialItem) {
+        guard let current = selectedItem else {
+            selectedItemID = item.id
+            return
+        }
+
+        if current.id == item.id {
+            selectedItemID = nil
+            return
+        }
+
+        if gameVM.attemptMerge(current, item) {
+            selectedItemID = nil
+        } else {
+            // Not a valid pair — treat the tap as picking a new item instead
+            // of failing silently.
+            selectedItemID = item.id
+        }
+    }
 
     var body: some View {
         NavigationView {
             ZStack {
                 CosmicBackground()
 
-                VStack {
+                VStack(spacing: 8) {
                     // Resource Bar
                     HStack {
                         ResourceBadge(icon: "star.fill", value: gameVM.stardust, color: .yellow)
@@ -1005,6 +1106,12 @@ struct MergeBoardView: View {
                     .padding()
                     .background(.ultraThinMaterial)
 
+                    Text(gameVM.nextStepHint)
+                        .font(.caption)
+                        .foregroundColor(.yellow.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+
                     HStack {
                         Text("\(abbreviatedNumber(gameVM.idleEngine.totalProductionPerSec))/sec")
                             .font(.caption)
@@ -1015,33 +1122,78 @@ struct MergeBoardView: View {
                         Button {
                             _ = gameVM.summonItem()
                         } label: {
-                            Label("Summon (\(gameVM.itemSummonCost) gems)", systemImage: "sparkles")
+                            Label("\(gameVM.itemSummonCost)", systemImage: "diamond.fill")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.purple)
+                        .disabled(gameVM.nebulaGems < gameVM.itemSummonCost)
+
+                        Button {
+                            _ = gameVM.forgeItem()
+                        } label: {
+                            Label("Forge (\(abbreviatedNumber(gameVM.forgeItemCost)))", systemImage: "hammer.fill")
                                 .font(.caption)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.purple)
-                        .disabled(gameVM.nebulaGems < gameVM.itemSummonCost)
+                        .tint(.orange)
+                        .disabled(gameVM.stardust < gameVM.forgeItemCost)
                     }
                     .padding(.horizontal)
-                    .padding(.bottom, 4)
 
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 15) {
-                            ForEach(gameVM.boardItems) { item in
-                                ItemCard(item: item)
-                                    .onDrag {
-                                        draggedItem = item
-                                        return NSItemProvider(object: item.id.uuidString as NSString)
-                                    }
-                                    .onDrop(of: [.text], delegate: ItemDropDelegate(item: item, draggedItem: $draggedItem, dropTarget: $dropTarget, gameVM: gameVM))
-                            }
+                    if gameVM.boardItems.isEmpty {
+                        Spacer()
+                        VStack(spacing: 12) {
+                            Image(systemName: "hammer.fill")
+                                .font(.system(size: 44))
+                                .foregroundColor(.orange.opacity(0.8))
+                            Text("No items yet")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                            Text("Forge one with Stardust, or place items in your Galaxy to earn more.")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 40)
                         }
-                        .padding()
+                        Spacer()
+                    } else {
+                        ScrollView {
+                            LazyVGrid(columns: columns, spacing: 15) {
+                                ForEach(gameVM.boardItems) { item in
+                                    Button {
+                                        handleTap(on: item)
+                                    } label: {
+                                        ItemCard(item: item)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .stroke(
+                                                        selectedItemID == item.id ? Color.yellow
+                                                            : (mergeableIDs.contains(item.id) ? Color.green : Color.clear),
+                                                        lineWidth: selectedItemID == item.id ? 3 : 2
+                                                    )
+                                            )
+                                            .scaleEffect(selectedItemID == item.id ? 1.08 : 1.0)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding()
+                            .animation(.spring(response: 0.3), value: selectedItemID)
+                        }
                     }
                 }
             }
             .navigationTitle("Merge Board")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showTutorial = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundColor(.white)
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: {
                         GameCenterManager.shared.showLeaderboard()
@@ -1051,26 +1203,72 @@ struct MergeBoardView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showTutorial) {
+                TutorialView()
+            }
         }
     }
 }
 
-struct ItemDropDelegate: DropDelegate {
-    let item: CelestialItem
-    @Binding var draggedItem: CelestialItem?
-    @Binding var dropTarget: CelestialItem?
-    let gameVM: GameViewModel
+// MARK: - Tutorial
+struct TutorialView: View {
+    @Environment(\.dismiss) var dismiss
 
-    func performDrop(info: DropInfo) -> Bool {
-        guard let draggedItem = draggedItem, draggedItem.id != item.id else { return false }
-        dropTarget = item
+    private let steps: [(icon: String, title: String, detail: String)] = [
+        ("hammer.fill", "Forge Items",
+         "Spend Stardust to forge new celestial items. This is where every run begins."),
+        ("circle.grid.cross.fill", "Merge Matching Items",
+         "Tap one item, then tap a matching one. They combine into a stronger item worth triple the production."),
+        ("sparkles", "Build Your Galaxy",
+         "Place items on the hex grid. Placed items generate Stardust every second, even while you're away."),
+        ("link", "Chain Elements",
+         "Items of the same element sitting next to each other boost each other's output by 15%."),
+        ("burst.fill", "Go Supernova",
+         "With \(GameViewModel.prestigeRequirement) items placed, trigger a Supernova. You lose the board but keep a permanent multiplier and earn Gems.")
+    ]
 
-        // Attempt merge
-        if gameVM.attemptMerge(draggedItem, item) {
-            // Success animation handled by state change
+    var body: some View {
+        NavigationView {
+            ZStack {
+                CosmicBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        Text("Grow a galaxy from a single mote of dust.")
+                            .font(.headline)
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.bottom, 4)
+
+                        ForEach(steps, id: \.title) { step in
+                            HStack(alignment: .top, spacing: 14) {
+                                Image(systemName: step.icon)
+                                    .font(.title2)
+                                    .foregroundColor(.yellow)
+                                    .frame(width: 32)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(step.title)
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(.white)
+                                    Text(step.detail)
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.75))
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("How to Play")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Start") { dismiss() }
+                        .bold()
+                }
+            }
         }
-
-        return true
     }
 }
 
@@ -1507,12 +1705,12 @@ struct PrestigeView: View {
                 }
 
                 VStack(spacing: 30) {
-                    Text("Supernova Ready")
+                    Text(placedCount >= GameViewModel.prestigeRequirement ? "Supernova Ready" : "Supernova Locked")
                         .font(.largeTitle.bold())
                         .foregroundColor(.white)
 
                     VStack {
-                        Text("\(placedCount) items placed")
+                        Text("\(placedCount) / \(GameViewModel.prestigeRequirement) items placed")
                             .foregroundColor(.white.opacity(0.8))
                         Text("Potential Galaxy Marks: \(potentialMarks)")
                             .font(.title2)
@@ -1542,7 +1740,7 @@ struct PrestigeView: View {
                             )
                             .cornerRadius(15)
                     }
-                    .disabled(placedCount < 10)
+                    .disabled(placedCount < GameViewModel.prestigeRequirement)
                     .padding(.horizontal)
                 }
             }
