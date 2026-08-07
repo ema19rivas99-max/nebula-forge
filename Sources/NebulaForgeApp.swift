@@ -523,6 +523,48 @@ enum GemShopCatalog {
     ]
 }
 
+// MARK: - Sprite skins
+/// An alternate art set for every item on the board.
+///
+/// A skin restyles all 52 sprites at once, which is far more visible than a
+/// palette change and is why it's the most expensive cosmetic in the game.
+struct SpriteSkin: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    /// Asset-name prefix, e.g. `item_fire_t3` or `anime_fire_t3`.
+    let prefix: String
+    let gemCost: Int
+}
+
+enum SkinCatalog {
+    static let defaultID = "classic"
+    static let defaultPrefix = "item"
+
+    static let all: [SpriteSkin] = [
+        SpriteSkin(id: "classic", name: "Classic",
+                   detail: "The original painted set.",
+                   prefix: "item", gemCost: 0),
+        SpriteSkin(id: "anime", name: "Anime Ink",
+                   detail: "All 52 items redrawn cel-shaded, with hard ink outlines.",
+                   prefix: "anime", gemCost: 1500),
+    ]
+
+    static func skin(for id: String) -> SpriteSkin {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+/// Holds the prefix the sprites render with.
+///
+/// `CelestialItemSprite` is used in a dozen places that have no view model to
+/// hand, so the active skin lives here and the view model pushes changes in.
+final class SkinManager: ObservableObject {
+    static let shared = SkinManager()
+    @Published var activePrefix: String = SkinCatalog.defaultPrefix
+    private init() {}
+}
+
 // MARK: - Limited-time offers
 /// A gem-shop item on sale for a fixed window.
 ///
@@ -1343,10 +1385,10 @@ struct ItemChain {
 
     /// Hybrids only have art from `FusionCatalog.minTier` up, since lower tiers
     /// are unreachable.
-    func assetName(forTier tier: Int) -> String {
+    func assetName(forTier tier: Int, skin: String = SkinCatalog.defaultPrefix) -> String {
         let lowest = isHybrid ? FusionCatalog.minTier : 0
         let clamped = min(max(tier, lowest), tierNames.count - 1)
-        return "item_\(assetKey)_t\(clamped)"
+        return "\(skin)_\(assetKey)_t\(clamped)"
     }
 
     /// Production triples with each tier, matching the old merge maths.
@@ -1728,8 +1770,78 @@ class GameViewModel: ObservableObject {
     @Published var hasMadeFirstPurchase: Bool = false
     @Published var ownedThemeIDs: Set<String> = [CosmeticCatalog.defaultID]
     @Published var selectedThemeID: String = CosmeticCatalog.defaultID
+    @Published var ownedSkinIDs: Set<String> = [SkinCatalog.defaultID]
+    @Published var selectedSkinID: String = SkinCatalog.defaultID {
+        didSet { SkinManager.shared.activePrefix = SkinCatalog.skin(for: selectedSkinID).prefix }
+    }
 
-    var theme: CosmeticTheme { CosmeticCatalog.theme(for: selectedThemeID) }
+    func owns(_ skin: SpriteSkin) -> Bool {
+        skin.gemCost == 0 || ownedSkinIDs.contains(skin.id)
+    }
+
+    @discardableResult
+    func purchaseSkin(_ skin: SpriteSkin) -> Bool {
+        guard !owns(skin), nebulaGems >= skin.gemCost else { return false }
+        nebulaGems -= skin.gemCost
+        ownedSkinIDs.insert(skin.id)
+        selectedSkinID = skin.id
+        Feedback.purchase()
+        saveGameState()
+        return true
+    }
+
+    @discardableResult
+    func selectSkin(_ skin: SpriteSkin) -> Bool {
+        guard owns(skin) else { return false }
+        selectedSkinID = skin.id
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    /// A theme being tried on. Overrides the selection until it lapses.
+    ///
+    /// Buying a look you've only seen as a thumbnail is a bad deal, and a
+    /// player who can see it on their own board is far likelier to want it.
+    @Published var previewThemeID: String?
+    @Published var previewEndsAt: Date?
+
+    var theme: CosmeticTheme {
+        CosmeticCatalog.theme(for: previewThemeID ?? selectedThemeID)
+    }
+
+    var isPreviewing: Bool { previewThemeID != nil }
+
+    var previewSecondsRemaining: Int {
+        guard let previewEndsAt else { return 0 }
+        return max(0, Int(previewEndsAt.timeIntervalSinceNow))
+    }
+
+    /// How long a try-on lasts. Long enough to play a little, short enough that
+    /// it isn't just a free theme.
+    static let previewDuration: TimeInterval = 120
+
+    func startPreview(_ theme: CosmeticTheme) {
+        guard !owns(theme) else {
+            selectTheme(theme)
+            return
+        }
+        previewThemeID = theme.id
+        previewEndsAt = Date().addingTimeInterval(Self.previewDuration)
+        Feedback.place()
+    }
+
+    func endPreview() {
+        guard previewThemeID != nil else { return }
+        previewThemeID = nil
+        previewEndsAt = nil
+    }
+
+    /// Ends a lapsed preview. Driven off the idle tick like the surge.
+    private func tickPreview() {
+        guard previewThemeID != nil, previewSecondsRemaining <= 0 else { return }
+        endPreview()
+    }
 
     /// 2x while a surge is running, 1x otherwise.
     var surgeMultiplier: Double {
@@ -1834,6 +1946,8 @@ class GameViewModel: ObservableObject {
         static let firstPurchase = "nf.hasMadeFirstPurchase"
         static let ownedThemes = "nf.ownedThemes"
         static let selectedTheme = "nf.selectedTheme"
+        static let ownedSkins = "nf.ownedSkins"
+        static let selectedSkin = "nf.selectedSkin"
     }
 
     init() {
@@ -1878,6 +1992,7 @@ class GameViewModel: ObservableObject {
             self.stardust += produced
             self.tickComet()
             self.tickSurge()
+            self.tickPreview()
         }
         idleEngine.start()
     }
@@ -2364,6 +2479,9 @@ class GameViewModel: ObservableObject {
         nebulaGems -= theme.gemCost
         ownedThemeIDs.insert(theme.id)
         selectedThemeID = theme.id
+        // Otherwise the preview would keep overriding the theme they just paid
+        // for, and expire out from under them.
+        endPreview()
         Feedback.purchase()
         saveGameState()
         return true
@@ -2602,6 +2720,8 @@ class GameViewModel: ObservableObject {
         defaults.set(hasMadeFirstPurchase, forKey: DefaultsKey.firstPurchase)
         defaults.set(Array(ownedThemeIDs), forKey: DefaultsKey.ownedThemes)
         defaults.set(selectedThemeID, forKey: DefaultsKey.selectedTheme)
+        defaults.set(Array(ownedSkinIDs), forKey: DefaultsKey.ownedSkins)
+        defaults.set(selectedSkinID, forKey: DefaultsKey.selectedSkin)
         // A surge is wall-clock time the player paid for, so it keeps running
         // while the app is closed rather than pausing.
         if let surgeEndsAt {
@@ -2832,6 +2952,11 @@ class GameViewModel: ObservableObject {
         let savedTheme = defaults.string(forKey: DefaultsKey.selectedTheme) ?? CosmeticCatalog.defaultID
         // Don't leave the board wearing a theme the player doesn't own.
         selectedThemeID = ownedThemeIDs.contains(savedTheme) ? savedTheme : CosmeticCatalog.defaultID
+
+        ownedSkinIDs = Set(defaults.stringArray(forKey: DefaultsKey.ownedSkins) ?? [])
+            .union([SkinCatalog.defaultID])
+        let savedSkin = defaults.string(forKey: DefaultsKey.selectedSkin) ?? SkinCatalog.defaultID
+        selectedSkinID = ownedSkinIDs.contains(savedSkin) ? savedSkin : SkinCatalog.defaultID
 
         if let end = defaults.object(forKey: DefaultsKey.surgeEndsAt) as? Date, end > Date() {
             surgeEndsAt = end
@@ -3853,6 +3978,7 @@ struct GalacticCanvasView: View {
 
                 VStack(spacing: 8) {
                     resourceBar
+                    previewBanner
                     surgeBanner
                     actionBar
                     hintLine
@@ -3980,6 +4106,46 @@ struct GalacticCanvasView: View {
             .disabled(gameVM.stardust < gameVM.forgeItemCost)
         }
         .padding(.horizontal)
+    }
+
+    /// Shown while trying a theme on, with the way to buy it right there —
+    /// which is the moment the player most wants it.
+    @ViewBuilder
+    private var previewBanner: some View {
+        if gameVM.isPreviewing {
+            let theme = gameVM.theme
+            let secs = gameVM.previewSecondsRemaining
+            HStack(spacing: 10) {
+                Image(systemName: "eye.fill")
+                    .foregroundColor(.black)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Trying \(theme.name)")
+                        .font(.caption.bold())
+                        .foregroundColor(.black)
+                    Text("\(secs / 60):\(String(format: "%02d", secs % 60)) left")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.black.opacity(0.7))
+                }
+                Spacer()
+                Button {
+                    gameVM.purchaseTheme(theme)
+                } label: {
+                    Label("\(theme.gemCost)", systemImage: "diamond.fill")
+                        .font(.caption2.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+                .disabled(gameVM.nebulaGems < theme.gemCost)
+
+                Button("End") { gameVM.endPreview() }
+                    .font(.caption2)
+                    .foregroundColor(.black)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.yellow))
+            .padding(.horizontal)
+        }
     }
 
     @ViewBuilder
@@ -4150,11 +4316,15 @@ struct CelestialItemSprite: View {
     private var baseColor: Color { item.element.tint }
 
     /// Asset name for this chain and tier, e.g. `item_fire_t3`, `item_eclipse_t5`.
+    /// Watched so a skin change repaints every sprite on the board at once.
+    @ObservedObject private var skins = SkinManager.shared
+
     private var assetName: String {
         guard let chain = ItemCatalog.chain(for: item.chainID) else {
+            // Fallback stays on the classic set, which always exists.
             return "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
         }
-        return chain.assetName(forTier: item.tier)
+        return chain.assetName(forTier: item.tier, skin: skins.activePrefix)
     }
 
     /// Hybrids now have their own artwork, but the ring still marks them out as
@@ -4766,8 +4936,25 @@ struct ShopView: View {
     }
 
     private var cosmeticShelf: some View {
-        ForEach(CosmeticCatalog.all) { theme in
-            ThemeRow(theme: theme)
+        VStack(spacing: 12) {
+            Text("Item Art")
+                .font(.headline)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            ForEach(SkinCatalog.all) { skin in
+                SkinRow(skin: skin, onNeedGems: { shelf = .gems })
+            }
+
+            Text("Board Themes")
+                .font(.headline)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+
+            ForEach(CosmeticCatalog.all) { theme in
+                ThemeRow(theme: theme)
+            }
         }
     }
 
@@ -4898,6 +5085,89 @@ struct ThemePreview: View {
     }
 }
 
+struct SkinRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let skin: SpriteSkin
+    var onNeedGems: () -> Void = {}
+
+    private var owned: Bool { gameVM.owns(skin) }
+    private var selected: Bool { gameVM.selectedSkinID == skin.id }
+
+    /// Three real sprites from the pack, so the price buys something visible.
+    private var sampleItems: [CelestialItem] {
+        ["fire_basic", "ice_basic", "void_basic"].enumerated().compactMap { index, chain in
+            ItemCatalog.makeItem(chainID: chain, tier: 5 + index % 2)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(skin.name)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text(skin.detail)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                Spacer()
+                if selected {
+                    Text("Active").font(.caption.bold()).foregroundColor(.green)
+                } else if owned {
+                    Button("Use") { gameVM.selectSkin(skin) }
+                        .buttonStyle(.bordered).tint(.blue).font(.caption)
+                } else {
+                    Button {
+                        if gameVM.nebulaGems >= skin.gemCost {
+                            gameVM.purchaseSkin(skin)
+                        } else {
+                            onNeedGems()
+                        }
+                    } label: {
+                        Label("\(skin.gemCost)", systemImage: "diamond.fill")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(gameVM.nebulaGems >= skin.gemCost ? .purple : .gray)
+                }
+            }
+
+            HStack(spacing: 10) {
+                ForEach(sampleItems) { item in
+                    SkinSample(item: item, prefix: skin.prefix)
+                }
+                Spacer()
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(selected ? Color.yellow : Color.clear, lineWidth: 2))
+        .cornerRadius(14)
+    }
+}
+
+/// Renders one sprite in a specific skin, ignoring the active one — the whole
+/// point is showing what you don't have yet.
+struct SkinSample: View {
+    let item: CelestialItem
+    let prefix: String
+
+    private var assetName: String {
+        ItemCatalog.chain(for: item.chainID)?.assetName(forTier: item.tier, skin: prefix)
+            ?? "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
+    }
+
+    var body: some View {
+        Image(assetName)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 44, height: 44)
+            .shadow(color: item.element.tint.opacity(0.5), radius: 5)
+    }
+}
+
 struct ThemeRow: View {
     @EnvironmentObject var gameVM: GameViewModel
     let theme: CosmeticTheme
@@ -4951,15 +5221,21 @@ struct ThemeRow: View {
                     }
                 }
             } else {
-                Button {
-                    gameVM.purchaseTheme(theme)
-                } label: {
-                    Label("\(theme.gemCost)", systemImage: "diamond.fill")
-                        .font(.caption.bold())
+                VStack(spacing: 4) {
+                    Button {
+                        gameVM.purchaseTheme(theme)
+                    } label: {
+                        Label("\(theme.gemCost)", systemImage: "diamond.fill")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.purple)
+                    .disabled(gameVM.nebulaGems < theme.gemCost)
+
+                    Button("Try it") { gameVM.startPreview(theme) }
+                        .font(.caption2)
+                        .foregroundColor(.blue)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
-                .disabled(gameVM.nebulaGems < theme.gemCost)
             }
         }
         .padding()

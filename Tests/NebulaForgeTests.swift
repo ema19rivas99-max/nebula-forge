@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import NebulaForge
 
 /// Tests for the rules that decide what a player gets — merge outcomes,
@@ -323,6 +324,38 @@ final class EconomyTests: XCTestCase {
             XCTAssertGreaterThan(offer.gemCost, 0, "\(offer.id) is free")
             XCTAssertFalse(offer.title.isEmpty)
         }
+    }
+
+    func testEverySkinHasArtForEveryReachableTier() {
+        // A missing asset renders as a blank tile, which looks like a bug and
+        // would be worst on the skin someone paid for.
+        for skin in SkinCatalog.all {
+            for chain in ItemCatalog.chains {
+                let lowest = chain.isHybrid ? FusionCatalog.minTier : 0
+                for tier in lowest..<chain.tierNames.count {
+                    let name = chain.assetName(forTier: tier, skin: skin.prefix)
+                    XCTAssertNotNil(UIImage(named: name),
+                                    "\(skin.name) is missing \(name)")
+                }
+            }
+        }
+    }
+
+    func testSkinsAreUniqueAndOneIsFree() {
+        let ids = SkinCatalog.all.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count)
+        XCTAssertEqual(SkinCatalog.skin(for: SkinCatalog.defaultID).gemCost, 0)
+        XCTAssertEqual(SkinCatalog.skin(for: SkinCatalog.defaultID).prefix,
+                       SkinCatalog.defaultPrefix)
+    }
+
+    func testHybridArtIsClampedToReachableTiers() {
+        // Hybrids have no art below the fusion threshold; asking for tier 0
+        // must fall back rather than name a file that doesn't exist.
+        let hybrid = ItemCatalog.chains.first { $0.isHybrid }!
+        let name = hybrid.assetName(forTier: 0, skin: "anime")
+        XCTAssertTrue(name.hasSuffix("_t\(FusionCatalog.minTier)"), name)
+        XCTAssertNotNil(UIImage(named: name))
     }
 
     func testThemeIDsAreUnique() {
