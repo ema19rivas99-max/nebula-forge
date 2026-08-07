@@ -269,6 +269,29 @@ final class EconomyTests: XCTestCase {
         }
     }
 
+    func testBoardIsBigEnoughToKeepMerging() {
+        // Merging consumes two tiles to make one, so a board that's only just
+        // big enough to hold a run stalls it. 5x5 was too small in practice.
+        XCTAssertGreaterThanOrEqual(GameViewModel.totalTiles, 36)
+        XCTAssertEqual(GameViewModel.totalTiles,
+                       GameViewModel.gridRows * GameViewModel.gridCols)
+    }
+
+    func testBoardFitsAPhoneWidth() {
+        // Six columns at this size plus the odd-row offset must not overflow
+        // the narrowest supported iPhone.
+        let perColumn = HexTileView.tileWidth + HexTileView.columnSpacing
+        let width = perColumn * CGFloat(GameViewModel.gridCols)
+            + HexTileView.tileWidth / 2
+        XCTAssertLessThan(width, 375, "the board would overflow an iPhone SE")
+    }
+
+    func testUnlockEveryTileGoalMatchesTheBoard() {
+        let goal = GoalCatalog.all.first { $0.id == "tiles_all" }
+        XCTAssertEqual(goal?.target, GameViewModel.totalTiles,
+                       "the goal would be unreachable or trivially complete")
+    }
+
     func testDailyQuestsAreThreeAndDistinct() {
         let quests = DailyQuestCatalog.today()
         XCTAssertEqual(quests.count, 3)

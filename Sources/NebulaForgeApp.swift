@@ -1168,8 +1168,9 @@ enum GoalCatalog {
              target: 20, shardReward: 120, gemReward: 12, category: .building) { $0.placedCount },
         Goal(id: "tiles_15", title: "Room to Grow", detail: "Unlock 15 tiles",
              target: 15, shardReward: 50, gemReward: 5, category: .building) { $0.unlockedTileCount },
-        Goal(id: "tiles_25", title: "The Whole Sky", detail: "Unlock every tile",
-             target: 25, shardReward: 300, gemReward: 30, category: .building) { $0.unlockedTileCount },
+        Goal(id: "tiles_all", title: "The Whole Sky", detail: "Unlock every tile",
+             target: GameViewModel.totalTiles, shardReward: 400, gemReward: 40,
+             category: .building) { $0.unlockedTileCount },
         Goal(id: "forge_50", title: "Industrious", detail: "Forge 50 items",
              target: 50, shardReward: 40, gemReward: 4, category: .building) { $0.lifetimeForged },
         Goal(id: "forge_250", title: "Foundry", detail: "Forge 250 items",
@@ -1856,6 +1857,17 @@ class GameViewModel: ObservableObject {
         }
     }
 
+    /// Board dimensions.
+    ///
+    /// Was 5x5. That ran out: merging consumes two tiles to make one, so a
+    /// board deep into a run is mostly high-tier items with nowhere to put the
+    /// next forge, and the game stalls exactly when it should be opening up.
+    /// Six columns is the most that fits an iPhone at a readable tile size; the
+    /// extra room goes into rows, which scroll.
+    static let gridRows = 7
+    static let gridCols = 6
+    static var totalTiles: Int { gridRows * gridCols }
+
     /// How often a comet can appear, and how long it sticks around once it does.
     static let cometInterval: TimeInterval = 180
     static let cometLifetime: TimeInterval = 20
@@ -1972,8 +1984,8 @@ class GameViewModel: ObservableObject {
     func initializeBoard(unlockedRows: Int = 3, unlockedCols: Int = 3) {
         // Grid first: starting items are placed straight onto it, so it has to
         // exist before they're spawned.
-        gridTiles = (0..<5).map { row in
-            (0..<5).map { col in
+        gridTiles = (0..<Self.gridRows).map { row in
+            (0..<Self.gridCols).map { col in
                 GridTile(row: row, col: col,
                          isUnlocked: row < unlockedRows && col < unlockedCols,
                          placedItem: nil)
@@ -2742,8 +2754,8 @@ class GameViewModel: ObservableObject {
             ? snapshot.selectedThemeID : CosmeticCatalog.defaultID
 
         let unlocked = Set(snapshot.unlockedTiles)
-        gridTiles = (0..<5).map { row in
-            (0..<5).map { col in
+        gridTiles = (0..<Self.gridRows).map { row in
+            (0..<Self.gridCols).map { col in
                 GridTile(row: row, col: col,
                          isUnlocked: unlocked.contains("\(row),\(col)"),
                          placedItem: nil)
@@ -2829,8 +2841,8 @@ class GameViewModel: ObservableObject {
         // Saves written before tile unlocking existed have no stored set, so
         // fall back to deriving it from prestige state.
         let unlockedKeys = Set(defaults.stringArray(forKey: DefaultsKey.unlockedTiles) ?? [])
-        gridTiles = (0..<5).map { row in
-            (0..<5).map { col in
+        gridTiles = (0..<Self.gridRows).map { row in
+            (0..<Self.gridCols).map { col in
                 let unlocked = unlockedKeys.isEmpty
                     ? (hasPrestiged ? (row < 3 && col < 4) : (row < 2 && col < 3))
                     : unlockedKeys.contains("\(row),\(col)")
@@ -3995,12 +4007,14 @@ struct GalacticCanvasView: View {
     }
 
     private var hexGrid: some View {
-        VStack(spacing: -10) {
+        VStack(spacing: HexTileView.rowSpacing) {
             ForEach(0..<gameVM.gridTiles.count, id: \.self) { row in
-                HStack(spacing: -5) {
+                HStack(spacing: HexTileView.columnSpacing) {
                     ForEach(0..<gameVM.gridTiles[row].count, id: \.self) { col in
                         hexTile(row: row, col: col)
-                            .offset(x: row % 2 == 0 ? 25 : 0)
+                            // Odd rows sit flush; even rows shift half a tile
+                            // to make the interlock read as hexagonal.
+                            .offset(x: row % 2 == 0 ? (HexTileView.tileWidth / 2 - 6) : 0)
                     }
                 }
             }
@@ -4207,6 +4221,15 @@ struct CelestialItemSprite: View {
 }
 
 struct HexTileView: View {
+    /// Sized so six columns fit an iPhone without horizontal scrolling.
+    /// Effective width per column is `tileWidth + columnSpacing`, and six of
+    /// those plus the odd-row offset has to stay under about 360pt.
+    static let tileWidth: CGFloat = 58
+    static let tileHeight: CGFloat = 67
+    static let columnSpacing: CGFloat = -5
+    static let rowSpacing: CGFloat = -9
+    static let spriteSize: CGFloat = 28
+
     let tile: GridTile
     let isSelected: Bool
     let isMergeCandidate: Bool
@@ -4249,11 +4272,11 @@ struct HexTileView: View {
                         HexagonShape()
                             .stroke(strokeColor, lineWidth: strokeWidth)
                     )
-                    .frame(width: 65, height: 75)
+                    .frame(width: HexTileView.tileWidth, height: HexTileView.tileHeight)
 
                 if let item = tile.placedItem {
                     VStack(spacing: 0) {
-                        CelestialItemSprite(item: item, size: 32)
+                        CelestialItemSprite(item: item, size: Self.spriteSize)
                         // The per-tile number is the point of merging the two
                         // boards: adjacency effects are now readable in place.
                         Text(abbreviatedNumber(output))
