@@ -820,6 +820,8 @@ struct SpriteSkin: Identifiable {
     /// Asset-name prefix, e.g. `item_fire_t3` or `anime_fire_t3`.
     let prefix: String
     let gemCost: Int
+    /// The passive this skin grants while equipped. Free skins carry none.
+    var effect: CosmeticEffect = .none
 }
 
 enum SkinCatalog {
@@ -988,10 +990,12 @@ struct CosmeticTheme: Identifiable {
     /// Soft coloured clouds drawn behind the starfield. This is what stops the
     /// themes reading as "the same screen, slightly different blue".
     let nebula: [Color]
+    /// The passive this theme grants while equipped. Free themes carry none.
+    let effect: CosmeticEffect
 
     init(id: String, name: String, detail: String, gemCost: Int,
          background: [Color], tileFill: [Color], accent: Color, starTint: Color,
-         nebula: [Color] = []) {
+         nebula: [Color] = [], effect: CosmeticEffect = .none) {
         self.id = id
         self.name = name
         self.detail = detail
@@ -1001,6 +1005,7 @@ struct CosmeticTheme: Identifiable {
         self.accent = accent
         self.starTint = starTint
         self.nebula = nebula
+        self.effect = effect
     }
 }
 
@@ -1013,8 +1018,7 @@ enum CosmeticCatalog {
                          Color(red: 0.05, green: 0.02, blue: 0.30)],
             tileFill: [Color.blue.opacity(0.15), Color.purple.opacity(0.10)],
             accent: .purple, starTint: .white,
-            nebula: [Color.purple.opacity(0.18), Color.blue.opacity(0.14)],
-            effect: CosmeticEffect(elementBonus: [.ice: 1.12])),
+            nebula: [Color.purple.opacity(0.18), Color.blue.opacity(0.14)]),
 
         CosmeticTheme(
             id: "crimson", name: "Crimson Nebula",
@@ -1034,7 +1038,7 @@ enum CosmeticCatalog {
             tileFill: [Color.teal.opacity(0.18), Color.green.opacity(0.10)],
             accent: .teal, starTint: Color(red: 0.85, green: 1.0, blue: 0.95),
             nebula: [Color.green.opacity(0.20), Color.teal.opacity(0.18)],
-            effect: CosmeticEffect(forgeCost: 0.9)),
+            effect: CosmeticEffect(elementBonus: [.ice: 1.12])),
 
         CosmeticTheme(
             id: "gilded", name: "Golden Expanse",
@@ -1104,7 +1108,8 @@ enum CosmeticCatalog {
             tileFill: [Color.purple.opacity(0.18), Color.cyan.opacity(0.12)],
             accent: .purple, starTint: .white,
             nebula: [Color.purple.opacity(0.22), Color.cyan.opacity(0.20),
-                     Color.pink.opacity(0.16)]),
+                     Color.pink.opacity(0.16)],
+            effect: CosmeticEffect(fusionShards: 1.25)),
 
         CosmeticTheme(
             id: "solarflare", name: "Solar Flare",
