@@ -1901,6 +1901,10 @@ class IdleEngine: ObservableObject {
     var permanentMultiplier: Double = 1.0
     /// Set by the view model from purchased prestige upgrades.
     var upgradeMultiplier: Double = 1.0
+    /// Per-element multipliers from the equipped skin and theme. This is what
+    /// makes the specialist sets genuinely different builds rather than
+    /// reskins — Dragonscale really does change how Fire performs.
+    var elementBonus: [Element: Double] = [:]
 
     private let tickInterval: TimeInterval = 0.1
 
@@ -1977,6 +1981,14 @@ class IdleEngine: ObservableObject {
         }
         // A tile swarmed by Void still contributes something.
         neighbourBonus = max(0.1, neighbourBonus)
+
+        // The equipped set's element bonus, applied last so it scales whatever
+        // the placement already earned.
+        if let bonus = elementBonus[item.element], bonus != 1 {
+            selfBonus *= bonus
+            let delta = Int(((bonus - 1) * 100).rounded())
+            notes.append("\(delta > 0 ? "+" : "")\(delta)% set")
+        }
 
         return TileProduction(base: item.baseProduction,
                               selfBonus: selfBonus,
