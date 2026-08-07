@@ -37,3 +37,41 @@ jobs:
             -scheme NebulaForge \
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO
+
+      # Tests need a concrete simulator, not the generic destination the build
+      # uses. The runner's available devices change over time, so one is picked
+      # at runtime rather than pinned to a name that will eventually vanish.
+      - name: Pick a simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available
+          UDID=$(xcrun simctl list devices available \
+            | grep -E '^[[:space:]]*iPhone' \
+            | tail -1 \
+            | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          if [ -z "$UDID" ]; then
+            echo 'No iPhone simulator available on this runner' >&2
+            exit 1
+          fi
+          echo "Using simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project NebulaForge.xcodeproj \
+            -scheme NebulaForge \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test.log
+
+      # xcodebuild can report a passing exit status while individual tests
+      # failed, so the log is checked for the real result too.
+      - name: Verify test results
+        run: |
+          if grep -q "Test suite .* failed\|error: Test\|\*\* TEST FAILED \*\*" test.log; then
+            echo 'Tests reported failures'
+            exit 1
+          fi
+          grep -c "Test Case .* passed" test.log | xargs echo "passing tests:"

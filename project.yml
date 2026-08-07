@@ -56,11 +56,30 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Apple Distribution"
           PROVISIONING_PROFILE_SPECIFIER: "NebulaForge App Store"
+  NebulaForgeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: NebulaForge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ema19rivas99.nebulaforge.tests
+        GENERATE_INFOPLIST_FILE: YES
+        # Tests run against the app, so they must not inherit its manual
+        # distribution signing.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: "5.0"
+
 schemes:
   NebulaForge:
     build:
       targets:
         NebulaForge: all
+        NebulaForgeTests: [test]
     run:
       config: Debug
     archive:
@@ -71,3 +90,5 @@ schemes:
       config: Debug
     test:
       config: Debug
+      targets:
+        - NebulaForgeTests
