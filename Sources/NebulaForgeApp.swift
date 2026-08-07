@@ -523,6 +523,198 @@ enum GemShopCatalog {
     ]
 }
 
+// MARK: - Player profile
+/// Identity, stored entirely on this device.
+///
+/// Deliberately not an account. A real one would mean a backend, personal data
+/// in storage, a changed App Privacy declaration — the listing currently says
+/// "Data Not Collected", which is worth keeping — and GDPR/COPPA duties for a
+/// 4+ app. None of that is needed for nicknames and cosmetics. It rides along
+/// in the iCloud save, so it follows the player between devices anyway, and
+/// Game Center already supplies identity for the leaderboards.
+struct PlayerProfile: Codable, Equatable {
+    var nickname: String
+    var avatarID: String
+    var frameID: String
+    var bannerID: String
+    var titleID: String
+
+    static let `default` = PlayerProfile(
+        nickname: "",
+        avatarID: AvatarCatalog.defaultID,
+        frameID: FrameCatalog.defaultID,
+        bannerID: BannerCatalog.defaultID,
+        titleID: TitleCatalog.defaultID)
+
+    /// Falls back to something presentable rather than an empty label.
+    var displayName: String {
+        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Anonymous Architect" : trimmed
+    }
+}
+
+/// How a cosmetic is obtained. Earned ones exist so the free player has a
+/// reason to open the screen at all — a wall of padlocks sells nothing.
+enum Unlock: Equatable {
+    case free
+    case gems(Int)
+    /// Unlocked by a goal the player has already claimed.
+    case goal(String)
+    /// Unlocked by owning a store product.
+    case purchase(String)
+}
+
+protocol Cosmetic: Identifiable {
+    var id: String { get }
+    var name: String { get }
+    var unlock: Unlock { get }
+}
+
+struct Avatar: Cosmetic {
+    let id: String
+    let name: String
+    let symbol: String
+    let tint: Color
+    let unlock: Unlock
+}
+
+struct AvatarFrame: Cosmetic {
+    let id: String
+    let name: String
+    let colors: [Color]
+    let width: CGFloat
+    let unlock: Unlock
+}
+
+struct ProfileBanner: Cosmetic {
+    let id: String
+    let name: String
+    let colors: [Color]
+    let unlock: Unlock
+}
+
+struct PlayerTitle: Cosmetic {
+    let id: String
+    let name: String
+    let unlock: Unlock
+}
+
+enum AvatarCatalog {
+    static let defaultID = "star"
+    static let all: [Avatar] = [
+        Avatar(id: "star", name: "Star", symbol: "star.fill", tint: .yellow, unlock: .free),
+        Avatar(id: "moon", name: "Crescent", symbol: "moon.stars.fill", tint: .cyan, unlock: .free),
+        Avatar(id: "flame", name: "Ignition", symbol: "flame.fill", tint: .orange,
+               unlock: .goal("merge_50")),
+        Avatar(id: "bolt", name: "Surge", symbol: "bolt.fill", tint: .yellow,
+               unlock: .goal("comet_25")),
+        Avatar(id: "hexagon", name: "Architect", symbol: "hexagon.fill", tint: .purple,
+               unlock: .goal("prestige_5")),
+        Avatar(id: "sparkles", name: "Fusion", symbol: "sparkles", tint: .pink,
+               unlock: .goal("fusion_10")),
+        Avatar(id: "atom", name: "Singularity", symbol: "atom", tint: .indigo, unlock: .gems(200)),
+        Avatar(id: "crown", name: "Sovereign", symbol: "crown.fill", tint: .yellow,
+               unlock: .gems(400)),
+        Avatar(id: "globe", name: "Worldshaper", symbol: "globe.europe.africa.fill",
+               tint: .teal, unlock: .gems(350)),
+        Avatar(id: "infinity", name: "Endless", symbol: "infinity", tint: .mint, unlock: .gems(600)),
+        Avatar(id: "nova", name: "Nova", symbol: "burst.fill", tint: .orange,
+               unlock: .purchase("nebulaforge.architectkit")),
+        Avatar(id: "diamond", name: "Patron", symbol: "diamond.fill", tint: .purple,
+               unlock: .purchase("nebulaforge.nebulapass.monthly")),
+    ]
+
+    static func avatar(for id: String) -> Avatar {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+enum FrameCatalog {
+    static let defaultID = "plain"
+    static let all: [AvatarFrame] = [
+        AvatarFrame(id: "plain", name: "Plain", colors: [.white.opacity(0.3)],
+                    width: 2, unlock: .free),
+        AvatarFrame(id: "bronze", name: "Bronze", colors: [Color(red: 0.8, green: 0.5, blue: 0.25)],
+                    width: 3, unlock: .goal("merge_100")),
+        AvatarFrame(id: "silver", name: "Silver", colors: [Color(red: 0.85, green: 0.87, blue: 0.9)],
+                    width: 3, unlock: .goal("merge_500")),
+        AvatarFrame(id: "gold", name: "Gold", colors: [Color(red: 1.0, green: 0.84, blue: 0.3)],
+                    width: 3.5, unlock: .goal("merge_2000")),
+        AvatarFrame(id: "ember", name: "Ember", colors: [.orange, .red, .orange],
+                    width: 3.5, unlock: .gems(250)),
+        AvatarFrame(id: "aurora", name: "Aurora", colors: [.teal, .green, .cyan, .teal],
+                    width: 3.5, unlock: .gems(300)),
+        AvatarFrame(id: "void", name: "Event Horizon",
+                    colors: [.purple, .indigo, .black, .purple], width: 4, unlock: .gems(500)),
+        AvatarFrame(id: "prism", name: "Prism",
+                    colors: [.red, .orange, .yellow, .green, .cyan, .blue, .purple, .red],
+                    width: 4, unlock: .gems(900)),
+    ]
+
+    static func frame(for id: String) -> AvatarFrame {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+enum BannerCatalog {
+    static let defaultID = "void_banner"
+    static let all: [ProfileBanner] = [
+        ProfileBanner(id: "void_banner", name: "Deep Void",
+                      colors: [Color(red: 0.06, green: 0.03, blue: 0.22),
+                               Color(red: 0.12, green: 0.06, blue: 0.36)], unlock: .free),
+        ProfileBanner(id: "dawn", name: "First Light",
+                      colors: [Color(red: 0.30, green: 0.10, blue: 0.28),
+                               Color(red: 0.85, green: 0.45, blue: 0.30)],
+                      unlock: .goal("streak_3")),
+        ProfileBanner(id: "ice_banner", name: "Cold Front",
+                      colors: [Color(red: 0.03, green: 0.16, blue: 0.30),
+                               Color(red: 0.30, green: 0.62, blue: 0.80)],
+                      unlock: .goal("tier_5")),
+        ProfileBanner(id: "inferno", name: "Inferno",
+                      colors: [Color(red: 0.25, green: 0.04, blue: 0.02),
+                               Color(red: 0.90, green: 0.35, blue: 0.05)], unlock: .gems(200)),
+        ProfileBanner(id: "verdant_banner", name: "Verdant",
+                      colors: [Color(red: 0.02, green: 0.20, blue: 0.10),
+                               Color(red: 0.25, green: 0.70, blue: 0.40)], unlock: .gems(250)),
+        ProfileBanner(id: "royal", name: "Royal",
+                      colors: [Color(red: 0.16, green: 0.05, blue: 0.35),
+                               Color(red: 0.55, green: 0.30, blue: 0.90)], unlock: .gems(400)),
+        ProfileBanner(id: "gilded_banner", name: "Gilded",
+                      colors: [Color(red: 0.22, green: 0.15, blue: 0.02),
+                               Color(red: 0.95, green: 0.78, blue: 0.25)], unlock: .gems(650)),
+        ProfileBanner(id: "eclipse_banner", name: "Eclipse",
+                      colors: [.black, Color(red: 0.55, green: 0.20, blue: 0.85)],
+                      unlock: .gems(1000)),
+        ProfileBanner(id: "patron", name: "Patron",
+                      colors: [Color(red: 0.30, green: 0.10, blue: 0.45),
+                               Color(red: 0.95, green: 0.65, blue: 0.20)],
+                      unlock: .purchase("nebulaforge.nebulapass.plus.monthly")),
+    ]
+
+    static func banner(for id: String) -> ProfileBanner {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+enum TitleCatalog {
+    static let defaultID = "none"
+    static let all: [PlayerTitle] = [
+        PlayerTitle(id: "none", name: "No title", unlock: .free),
+        PlayerTitle(id: "apprentice", name: "Apprentice", unlock: .free),
+        PlayerTitle(id: "forgehand", name: "Forgehand", unlock: .goal("merge_100")),
+        PlayerTitle(id: "alchemist", name: "Alchemist", unlock: .goal("fusion_10")),
+        PlayerTitle(id: "architect", name: "Cosmic Architect", unlock: .goal("marks_200")),
+        PlayerTitle(id: "ascendant", name: "Ascendant", unlock: .goal("tier_7")),
+        PlayerTitle(id: "eternal", name: "Eternal", unlock: .gems(750)),
+        PlayerTitle(id: "benefactor", name: "Benefactor",
+                    unlock: .purchase("nebulaforge.gems.galaxy")),
+    ]
+
+    static func title(for id: String) -> PlayerTitle {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
 // MARK: - Sprite skins
 /// An alternate art set for every item on the board.
 ///
@@ -1770,9 +1962,107 @@ class GameViewModel: ObservableObject {
     @Published var hasMadeFirstPurchase: Bool = false
     @Published var ownedThemeIDs: Set<String> = [CosmeticCatalog.defaultID]
     @Published var selectedThemeID: String = CosmeticCatalog.defaultID
+    @Published var profile: PlayerProfile = .default
+    /// Cosmetics bought with gems. Goal- and purchase-unlocked ones aren't
+    /// listed here — they're derived, so they can't drift out of sync with the
+    /// thing that unlocked them.
+    @Published var boughtCosmeticIDs: Set<String> = []
+
     @Published var ownedSkinIDs: Set<String> = [SkinCatalog.defaultID]
     @Published var selectedSkinID: String = SkinCatalog.defaultID {
         didSet { SkinManager.shared.activePrefix = SkinCatalog.skin(for: selectedSkinID).prefix }
+    }
+
+    // MARK: Profile cosmetics
+
+    /// Whether a cosmetic is available, and why.
+    func isUnlocked(_ unlock: Unlock, id: String) -> Bool {
+        switch unlock {
+        case .free:
+            return true
+        case .gems:
+            return boughtCosmeticIDs.contains(id)
+        case .goal(let goalID):
+            return claimedGoalIDs.contains(goalID)
+        case .purchase(let productID):
+            return IAPManager.shared.purchasedProductIDs.contains(productID)
+        }
+    }
+
+    func isUnlocked<C: Cosmetic>(_ cosmetic: C) -> Bool {
+        isUnlocked(cosmetic.unlock, id: cosmetic.id)
+    }
+
+    /// Text explaining how something is obtained, for the locked state.
+    func unlockHint<C: Cosmetic>(_ cosmetic: C) -> String {
+        switch cosmetic.unlock {
+        case .free:
+            return "Available"
+        case .gems(let cost):
+            return "\(cost) Gems"
+        case .goal(let goalID):
+            let goal = GoalCatalog.all.first { $0.id == goalID }
+            return goal.map { "Goal: \($0.title)" } ?? "Locked"
+        case .purchase:
+            return "Included with a purchase"
+        }
+    }
+
+    @discardableResult
+    func buyCosmetic<C: Cosmetic>(_ cosmetic: C) -> Bool {
+        guard case .gems(let cost) = cosmetic.unlock,
+              !boughtCosmeticIDs.contains(cosmetic.id),
+              nebulaGems >= cost else { return false }
+        nebulaGems -= cost
+        boughtCosmeticIDs.insert(cosmetic.id)
+        Feedback.purchase()
+        saveGameState()
+        return true
+    }
+
+    /// Applies a cosmetic if it's unlocked. Equipping is free once owned.
+    @discardableResult
+    func equipAvatar(_ avatar: Avatar) -> Bool {
+        guard isUnlocked(avatar) else { return false }
+        profile.avatarID = avatar.id
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    @discardableResult
+    func equipFrame(_ frame: AvatarFrame) -> Bool {
+        guard isUnlocked(frame) else { return false }
+        profile.frameID = frame.id
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    @discardableResult
+    func equipBanner(_ banner: ProfileBanner) -> Bool {
+        guard isUnlocked(banner) else { return false }
+        profile.bannerID = banner.id
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    @discardableResult
+    func equipTitle(_ title: PlayerTitle) -> Bool {
+        guard isUnlocked(title) else { return false }
+        profile.titleID = title.id
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    /// Nicknames are local and never shown to anyone else, but they still get
+    /// trimmed and length-capped so the UI can't be broken with whitespace.
+    func setNickname(_ raw: String) {
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.nickname = String(cleaned.prefix(20))
+        saveGameState()
     }
 
     func owns(_ skin: SpriteSkin) -> Bool {
@@ -1948,6 +2238,8 @@ class GameViewModel: ObservableObject {
         static let selectedTheme = "nf.selectedTheme"
         static let ownedSkins = "nf.ownedSkins"
         static let selectedSkin = "nf.selectedSkin"
+        static let profile = "nf.profile"
+        static let boughtCosmetics = "nf.boughtCosmetics"
     }
 
     init() {
@@ -2722,6 +3014,10 @@ class GameViewModel: ObservableObject {
         defaults.set(selectedThemeID, forKey: DefaultsKey.selectedTheme)
         defaults.set(Array(ownedSkinIDs), forKey: DefaultsKey.ownedSkins)
         defaults.set(selectedSkinID, forKey: DefaultsKey.selectedSkin)
+        defaults.set(Array(boughtCosmeticIDs), forKey: DefaultsKey.boughtCosmetics)
+        if let encoded = try? JSONEncoder().encode(profile) {
+            defaults.set(encoded, forKey: DefaultsKey.profile)
+        }
         // A surge is wall-clock time the player paid for, so it keeps running
         // while the app is closed rather than pausing.
         if let surgeEndsAt {
@@ -2957,6 +3253,12 @@ class GameViewModel: ObservableObject {
             .union([SkinCatalog.defaultID])
         let savedSkin = defaults.string(forKey: DefaultsKey.selectedSkin) ?? SkinCatalog.defaultID
         selectedSkinID = ownedSkinIDs.contains(savedSkin) ? savedSkin : SkinCatalog.defaultID
+
+        boughtCosmeticIDs = Set(defaults.stringArray(forKey: DefaultsKey.boughtCosmetics) ?? [])
+        if let data = defaults.data(forKey: DefaultsKey.profile),
+           let decoded = try? JSONDecoder().decode(PlayerProfile.self, from: data) {
+            profile = decoded
+        }
 
         if let end = defaults.object(forKey: DefaultsKey.surgeEndsAt) as? Date, end > Date() {
             surgeEndsAt = end
@@ -3445,6 +3747,247 @@ struct OfflineEarningsView: View {
     }
 }
 
+// MARK: - Profile view
+/// Identity and its cosmetics. Everything here is local to the device and
+/// synced through iCloud — no account, no server, nothing collected.
+struct ProfileView: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    @Environment(\.dismiss) var dismiss
+    @State private var tab: Tab = .avatar
+    @State private var editingName = false
+    @State private var draftName = ""
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case avatar = "Avatar"
+        case frame = "Frame"
+        case banner = "Banner"
+        case title = "Title"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                CosmicBackground(theme: gameVM.theme)
+
+                VStack(spacing: 12) {
+                    card
+                    Picker("Section", selection: $tab) {
+                        ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            switch tab {
+                            case .avatar:
+                                ForEach(AvatarCatalog.all) { CosmeticRow(item: $0, kind: .avatar) }
+                            case .frame:
+                                ForEach(FrameCatalog.all) { CosmeticRow(item: $0, kind: .frame) }
+                            case .banner:
+                                ForEach(BannerCatalog.all) { CosmeticRow(item: $0, kind: .banner) }
+                            case .title:
+                                ForEach(TitleCatalog.all) { CosmeticRow(item: $0, kind: .title) }
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .navigationTitle("Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }.bold()
+                }
+            }
+            .alert("Nickname", isPresented: $editingName) {
+                TextField("Nickname", text: $draftName)
+                Button("Save") { gameVM.setNickname(draftName) }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Shown only to you. Up to 20 characters.")
+            }
+        }
+    }
+
+    /// The banner, avatar and title assembled the way they'll actually appear.
+    private var card: some View {
+        let banner = BannerCatalog.banner(for: gameVM.profile.bannerID)
+        let avatar = AvatarCatalog.avatar(for: gameVM.profile.avatarID)
+        let frame = FrameCatalog.frame(for: gameVM.profile.frameID)
+        let title = TitleCatalog.title(for: gameVM.profile.titleID)
+
+        return ZStack {
+            LinearGradient(colors: banner.colors,
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+
+            HStack(spacing: 14) {
+                AvatarBadge(avatar: avatar, frame: frame, size: 64)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Button {
+                        draftName = gameVM.profile.nickname
+                        editingName = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(gameVM.profile.displayName)
+                                .font(.title3.bold())
+                                .foregroundColor(.white)
+                            Image(systemName: "pencil.circle.fill")
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                    }
+                    if title.id != TitleCatalog.defaultID {
+                        Text(title.name)
+                            .font(.caption.bold())
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    Text("Rank \(gameVM.celestialRank) · \(gameVM.galaxyMarks) Marks")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .frame(height: 110)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal)
+    }
+}
+
+struct AvatarBadge: View {
+    let avatar: Avatar
+    let frame: AvatarFrame
+    var size: CGFloat = 48
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.black.opacity(0.35))
+            Image(systemName: avatar.symbol)
+                .font(.system(size: size * 0.45))
+                .foregroundColor(avatar.tint)
+            Circle()
+                .strokeBorder(
+                    AngularGradient(colors: frame.colors.count > 1
+                                    ? frame.colors : frame.colors + frame.colors,
+                                    center: .center),
+                    lineWidth: frame.width)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// One row in the cosmetic list. Handles all four kinds so the equip/buy/locked
+/// logic exists in one place rather than four near-identical views.
+struct CosmeticRow<C: Cosmetic>: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let item: C
+    let kind: Kind
+
+    enum Kind { case avatar, frame, banner, title }
+
+    private var unlocked: Bool { gameVM.isUnlocked(item) }
+
+    private var equipped: Bool {
+        switch kind {
+        case .avatar: return gameVM.profile.avatarID == item.id
+        case .frame: return gameVM.profile.frameID == item.id
+        case .banner: return gameVM.profile.bannerID == item.id
+        case .title: return gameVM.profile.titleID == item.id
+        }
+    }
+
+    private var gemCost: Int? {
+        if case .gems(let cost) = item.unlock { return cost }
+        return nil
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            preview
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.name)
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                if !unlocked {
+                    Text(gameVM.unlockHint(item))
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+
+            Spacer()
+
+            if equipped {
+                Text("Equipped").font(.caption.bold()).foregroundColor(.green)
+            } else if unlocked {
+                Button("Equip") { equip() }
+                    .buttonStyle(.bordered).tint(.blue).font(.caption)
+            } else if let cost = gemCost {
+                Button {
+                    if gameVM.buyCosmetic(item) { equip() }
+                } label: {
+                    Label("\(cost)", systemImage: "diamond.fill").font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(gameVM.nebulaGems >= cost ? .purple : .gray)
+            } else {
+                Image(systemName: "lock.fill")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.4))
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(14)
+        .opacity(unlocked ? 1 : 0.72)
+    }
+
+    private func equip() {
+        switch kind {
+        case .avatar: (item as? Avatar).map { gameVM.equipAvatar($0) }
+        case .frame: (item as? AvatarFrame).map { gameVM.equipFrame($0) }
+        case .banner: (item as? ProfileBanner).map { gameVM.equipBanner($0) }
+        case .title: (item as? PlayerTitle).map { gameVM.equipTitle($0) }
+        }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        switch kind {
+        case .avatar:
+            if let avatar = item as? Avatar {
+                AvatarBadge(avatar: avatar,
+                            frame: FrameCatalog.frame(for: gameVM.profile.frameID))
+            }
+        case .frame:
+            if let frame = item as? AvatarFrame {
+                AvatarBadge(avatar: AvatarCatalog.avatar(for: gameVM.profile.avatarID),
+                            frame: frame)
+            }
+        case .banner:
+            if let banner = item as? ProfileBanner {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(LinearGradient(colors: banner.colors,
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 64, height: 40)
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1))
+            }
+        case .title:
+            Image(systemName: "text.badge.star")
+                .font(.title3)
+                .foregroundColor(.yellow)
+                .frame(width: 48)
+        }
+    }
+}
+
 // MARK: - Settings
 struct SettingsView: View {
     @EnvironmentObject var gameVM: GameViewModel
@@ -3896,6 +4439,7 @@ struct GalacticCanvasView: View {
     @State private var blockReason: String?
     @State private var showTutorial = false
     @State private var showSettings = false
+    @State private var showProfile = false
     @State private var showGameCenterHelp = false
 
     private var selectedItem: CelestialItem? {
@@ -4008,6 +4552,14 @@ struct GalacticCanvasView: View {
                                 .foregroundColor(.white)
                         }
                         Button {
+                            showProfile = true
+                        } label: {
+                            AvatarBadge(
+                                avatar: AvatarCatalog.avatar(for: gameVM.profile.avatarID),
+                                frame: FrameCatalog.frame(for: gameVM.profile.frameID),
+                                size: 26)
+                        }
+                        Button {
                             showSettings = true
                         } label: {
                             Image(systemName: "gearshape.fill")
@@ -4037,6 +4589,9 @@ struct GalacticCanvasView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView().environmentObject(gameVM)
+            }
+            .sheet(isPresented: $showProfile) {
+                ProfileView().environmentObject(gameVM)
             }
             .alert("Leaderboards need Game Center", isPresented: $showGameCenterHelp) {
                 Button("Open Settings") {

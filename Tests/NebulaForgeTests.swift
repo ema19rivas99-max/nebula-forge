@@ -326,6 +326,76 @@ final class EconomyTests: XCTestCase {
         }
     }
 
+    func testProfileCosmeticIDsAreUniqueWithinEachSet() {
+        func assertUnique<C: Cosmetic>(_ items: [C], _ label: String) {
+            let ids = items.map(\.id)
+            XCTAssertEqual(Set(ids).count, ids.count, "duplicate id in \(label)")
+            XCTAssertFalse(items.contains { $0.name.isEmpty }, "\(label) has an unnamed entry")
+        }
+        assertUnique(AvatarCatalog.all, "avatars")
+        assertUnique(FrameCatalog.all, "frames")
+        assertUnique(BannerCatalog.all, "banners")
+        assertUnique(TitleCatalog.all, "titles")
+    }
+
+    func testEveryCosmeticSetHasAFreeDefault() {
+        // The default must be free, or a new player has no valid profile.
+        XCTAssertEqual(AvatarCatalog.avatar(for: AvatarCatalog.defaultID).unlock, .free)
+        XCTAssertEqual(FrameCatalog.frame(for: FrameCatalog.defaultID).unlock, .free)
+        XCTAssertEqual(BannerCatalog.banner(for: BannerCatalog.defaultID).unlock, .free)
+        XCTAssertEqual(TitleCatalog.title(for: TitleCatalog.defaultID).unlock, .free)
+    }
+
+    func testGoalLockedCosmeticsPointAtRealGoals() {
+        let goalIDs = Set(GoalCatalog.all.map(\.id))
+        func check<C: Cosmetic>(_ items: [C], _ label: String) {
+            for item in items {
+                if case .goal(let id) = item.unlock {
+                    XCTAssertTrue(goalIDs.contains(id),
+                                  "\(label) '\(item.id)' needs goal '\(id)', which doesn't exist")
+                }
+            }
+        }
+        check(AvatarCatalog.all, "avatar")
+        check(FrameCatalog.all, "frame")
+        check(BannerCatalog.all, "banner")
+        check(TitleCatalog.all, "title")
+    }
+
+    func testPurchaseLockedCosmeticsPointAtRealProducts() {
+        let products = Set(StoreCatalog.grants.keys)
+        func check<C: Cosmetic>(_ items: [C], _ label: String) {
+            for item in items {
+                if case .purchase(let id) = item.unlock {
+                    XCTAssertTrue(products.contains(id),
+                                  "\(label) '\(item.id)' needs product '\(id)', which doesn't exist")
+                }
+            }
+        }
+        check(AvatarCatalog.all, "avatar")
+        check(FrameCatalog.all, "frame")
+        check(BannerCatalog.all, "banner")
+        check(TitleCatalog.all, "title")
+    }
+
+    func testNicknameFallsBackRatherThanShowingNothing() {
+        var profile = PlayerProfile.default
+        XCTAssertFalse(profile.displayName.isEmpty)
+        profile.nickname = "   "
+        XCTAssertFalse(profile.displayName.isEmpty, "whitespace must not render as blank")
+        profile.nickname = "Manny"
+        XCTAssertEqual(profile.displayName, "Manny")
+    }
+
+    func testProfileSurvivesEncoding() throws {
+        var profile = PlayerProfile.default
+        profile.nickname = "Architect"
+        profile.avatarID = "crown"
+        let data = try JSONEncoder().encode(profile)
+        let back = try JSONDecoder().decode(PlayerProfile.self, from: data)
+        XCTAssertEqual(back, profile)
+    }
+
     func testEverySkinHasArtForEveryReachableTier() {
         // A missing asset renders as a blank tile, which looks like a bug and
         // would be worst on the skin someone paid for.
