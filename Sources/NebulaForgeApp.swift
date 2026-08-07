@@ -1092,7 +1092,8 @@ class IAPManager: ObservableObject {
         purchasedProductIDs = owned
         game?.applyEntitlements(multiplier: multiplier,
                                 offlineHours: offlineHours,
-                                themeIDs: themes)
+                                themeIDs: themes,
+                                productIDs: owned)
     }
 
     /// The highest subscription tier currently active, for the shop UI.
@@ -1955,6 +1956,9 @@ class GameViewModel: ObservableObject {
     @Published var purchaseOfflineHours: Double = 0
     /// Themes available because of an active purchase, not bought with gems.
     @Published var entitlementThemeIDs: Set<String> = []
+    /// Products currently entitled, mirrored from StoreKit so this type never
+    /// has to touch the MainActor-isolated store manager.
+    @Published var entitledProductIDs: Set<String> = []
     /// End of a Stellar Surge, if one is running.
     @Published var surgeEndsAt: Date?
 
@@ -1985,7 +1989,10 @@ class GameViewModel: ObservableObject {
         case .goal(let goalID):
             return claimedGoalIDs.contains(goalID)
         case .purchase(let productID):
-            return IAPManager.shared.purchasedProductIDs.contains(productID)
+            // Read from our own mirror rather than IAPManager, which is
+            // @MainActor — reaching into it from here is an actor violation,
+            // and the view model shouldn't depend on that singleton anyway.
+            return entitledProductIDs.contains(productID)
         }
     }
 
@@ -2657,7 +2664,8 @@ class GameViewModel: ObservableObject {
     /// Applies whatever the best currently-valid entitlement gives. Rebuilt
     /// wholesale on every refresh rather than accumulated, so losing a
     /// subscription actually takes its perks back.
-    func applyEntitlements(multiplier: Double, offlineHours: Double, themeIDs: Set<String>) {
+    func applyEntitlements(multiplier: Double, offlineHours: Double,
+                           themeIDs: Set<String>, productIDs: Set<String>) {
         let changed = multiplier != purchaseMultiplier
             || offlineHours != purchaseOfflineHours
             || themeIDs != entitlementThemeIDs
@@ -2665,6 +2673,7 @@ class GameViewModel: ObservableObject {
         purchaseMultiplier = multiplier
         purchaseOfflineHours = offlineHours
         entitlementThemeIDs = themeIDs
+        entitledProductIDs = productIDs
 
         // Don't strand the player looking at a theme they no longer have.
         if !owns(CosmeticCatalog.theme(for: selectedThemeID)) {
@@ -3950,10 +3959,14 @@ struct CosmeticRow<C: Cosmetic>: View {
 
     private func equip() {
         switch kind {
-        case .avatar: (item as? Avatar).map { gameVM.equipAvatar($0) }
-        case .frame: (item as? AvatarFrame).map { gameVM.equipFrame($0) }
-        case .banner: (item as? ProfileBanner).map { gameVM.equipBanner($0) }
-        case .title: (item as? PlayerTitle).map { gameVM.equipTitle($0) }
+        case .avatar:
+            if let avatar = item as? Avatar { gameVM.equipAvatar(avatar) }
+        case .frame:
+            if let frame = item as? AvatarFrame { gameVM.equipFrame(frame) }
+        case .banner:
+            if let banner = item as? ProfileBanner { gameVM.equipBanner(banner) }
+        case .title:
+            if let title = item as? PlayerTitle { gameVM.equipTitle(title) }
         }
     }
 
