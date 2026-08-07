@@ -240,9 +240,25 @@ class GameCenterManager: NSObject, ObservableObject {
     /// resubmitted on every merge.
     fileprivate var reportedPercent: [String: Double] = [:]
 
+    /// Publishes the current Game Center state.
+    ///
+    /// Always hops to the main queue: GameKit's authenticate handler fires on
+    /// an arbitrary thread, and mutating `@Published` off the main thread means
+    /// SwiftUI may never see the change — which is exactly how a signed-in
+    /// player ends up looking signed out.
     func playerAuthenticated() {
-        isAuthenticated = GKLocalPlayer.local.isAuthenticated
-        playerAlias = GKLocalPlayer.local.alias
+        let authenticated = GKLocalPlayer.local.isAuthenticated
+        let alias = GKLocalPlayer.local.alias
+
+        if Thread.isMainThread {
+            isAuthenticated = authenticated
+            playerAlias = alias
+        } else {
+            DispatchQueue.main.async {
+                self.isAuthenticated = authenticated
+                self.playerAlias = alias
+            }
+        }
     }
 
     func submitScore(_ score: Int64, leaderboardID: String = "nebulaforge.totalstarlight") {
@@ -263,13 +279,15 @@ class GameCenterManager: NSObject, ObservableObject {
     /// button — the app looks frozen with no way back. The guard is the fix; the
     /// button is also disabled in the UI while unauthenticated so the tap isn't
     /// silently ignored.
-    /// Retries authentication. GameKit's handler fires once per launch, so a
-    /// player who signs in from Settings mid-session has no other way back in.
-    func retryAuthentication() {
-        guard !isAuthenticated else { return }
-        GKLocalPlayer.local.authenticateHandler = { [weak self] _, _ in
-            self?.playerAuthenticated()
-        }
+    /// Re-reads Game Center's own state.
+    ///
+    /// Deliberately does NOT reassign `authenticateHandler`. Apple's contract
+    /// is that it's set once; reassigning restarts the flow and can leave
+    /// authentication worse off than before. `GKLocalPlayer.local` keeps
+    /// `isAuthenticated` current on its own, so re-reading is enough to catch
+    /// someone who signed in from Settings mid-session.
+    func refreshAuthenticationState() {
+        playerAuthenticated()
     }
 
     func showLeaderboard() {
@@ -3436,7 +3454,7 @@ struct ContentView: View {
                 NotificationManager.shared.clearBadge()
                 // Catches someone who signed into Game Center while away, and
                 // rolls the daily quests over if midnight passed.
-                GameCenterManager.shared.retryAuthentication()
+                GameCenterManager.shared.refreshAuthenticationState()
                 gameVM.refreshDailyState()
                 Task { await IAPManager.shared.refreshEntitlements() }
             default:
@@ -4588,7 +4606,7 @@ struct GalacticCanvasView: View {
                         if gameCenter.isAuthenticated {
                             GameCenterManager.shared.showLeaderboard()
                         } else {
-                            gameCenter.retryAuthentication()
+                            gameCenter.refreshAuthenticationState()
                             showGameCenterHelp = true
                         }
                     } label: {
