@@ -236,6 +236,10 @@ class GameCenterManager: NSObject, ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var playerAlias: String = ""
 
+    /// Last percentage sent per achievement, so unchanged values aren't
+    /// resubmitted on every merge.
+    fileprivate var reportedPercent: [String: Double] = [:]
+
     func playerAuthenticated() {
         isAuthenticated = GKLocalPlayer.local.isAuthenticated
         playerAlias = GKLocalPlayer.local.alias
@@ -277,6 +281,81 @@ class GameCenterManager: NSObject, ObservableObject {
         let gcVC = GKGameCenterViewController(state: .leaderboards)
         gcVC.gameCenterDelegate = self
         top.present(gcVC, animated: true)
+    }
+}
+
+// MARK: - Achievements
+/// Game Center achievement definitions. `id` must match the Achievement ID
+/// configured in App Store Connect exactly, or reporting silently no-ops.
+struct GameAchievement: Identifiable {
+    let id: String
+    let title: String
+    /// How far along the player is, 0...1.
+    let progress: (GameViewModel) -> Double
+}
+
+enum AchievementCatalog {
+    static let all: [GameAchievement] = [
+        GameAchievement(id: "nebulaforge.ach.firstmerge", title: "First Fusion") {
+            min(Double($0.totalMerges), 1)
+        },
+        GameAchievement(id: "nebulaforge.ach.merge100", title: "Century") {
+            Double($0.totalMerges) / 100
+        },
+        GameAchievement(id: "nebulaforge.ach.merge1000", title: "Forge Master") {
+            Double($0.totalMerges) / 1000
+        },
+        GameAchievement(id: "nebulaforge.ach.firstfusion", title: "Crossed Streams") {
+            min(Double($0.totalFusions), 1)
+        },
+        GameAchievement(id: "nebulaforge.ach.fusion50", title: "Alchemist") {
+            Double($0.totalFusions) / 50
+        },
+        GameAchievement(id: "nebulaforge.ach.tier5", title: "Stellar Architect") {
+            Double($0.highestTierReached) / 5
+        },
+        GameAchievement(id: "nebulaforge.ach.tier7", title: "Ascendant") {
+            Double($0.highestTierReached) / 7
+        },
+        GameAchievement(id: "nebulaforge.ach.prestige", title: "Reborn") {
+            min(Double($0.galaxyMarks), 1)
+        },
+        GameAchievement(id: "nebulaforge.ach.marks100", title: "Cosmic Architect") {
+            Double($0.galaxyMarks) / 100
+        },
+        GameAchievement(id: "nebulaforge.ach.streak7", title: "Regular Orbit") {
+            Double($0.dailyStreak) / 7
+        },
+    ]
+}
+
+extension GameCenterManager {
+    /// Reports progress for everything that has moved.
+    ///
+    /// Submissions are cached and only sent when the percentage actually
+    /// increases — this is called after every merge, and Game Center will
+    /// throttle an app that reports unchanged values continuously.
+    func report(_ game: GameViewModel) {
+        guard isAuthenticated else { return }
+
+        var toSend: [GKAchievement] = []
+        for definition in AchievementCatalog.all {
+            let percent = min(max(definition.progress(game), 0), 1) * 100
+            if let sent = reportedPercent[definition.id], percent <= sent { continue }
+            reportedPercent[definition.id] = percent
+
+            let achievement = GKAchievement(identifier: definition.id)
+            achievement.percentComplete = percent
+            achievement.showsCompletionBanner = true
+            toSend.append(achievement)
+        }
+
+        guard !toSend.isEmpty else { return }
+        GKAchievement.report(toSend) { error in
+            if let error {
+                print("Achievement report failed: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
@@ -1680,6 +1759,7 @@ class GameViewModel: ObservableObject {
         dailyStreak = reward.day
         lastDailyClaim = Date()
         pendingDailyReward = nil
+        GameCenterManager.shared.report(self)
         Feedback.goal()
         saveGameState()
         return true
@@ -1775,6 +1855,7 @@ class GameViewModel: ObservableObject {
         celestialRank = 1 + totalMerges / 10
 
         Feedback.merge(isFusion: isFusion)
+        GameCenterManager.shared.report(self)
     }
 
     /// Unlocks the nearest locked tile. False when the grid is fully open.
@@ -2199,8 +2280,8 @@ class GameViewModel: ObservableObject {
         // after seeding would wipe the items just placed.
         initializeBoard(unlockedRows: 3, unlockedCols: 4)
 
-        // Submit prestige achievement
         GameCenterManager.shared.submitScore(Int64(galaxyMarks), leaderboardID: "nebulaforge.prestige")
+        GameCenterManager.shared.report(self)
 
         Feedback.supernova()
 
