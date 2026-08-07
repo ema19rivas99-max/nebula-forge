@@ -799,14 +799,26 @@ struct ItemChain {
     /// Hybrids can't be forged or summoned — the only way in is fusing two
     /// different basic chains, which is what makes them worth chasing.
     let isHybrid: Bool
+    /// Prefix of this chain's artwork, e.g. `tempest` -> `item_tempest_t4`.
+    /// Basic chains use their element name so existing assets keep resolving.
+    let assetKey: String
 
     init(id: String, element: Element, baseProduction: Double,
-         tierNames: [String], isHybrid: Bool = false) {
+         tierNames: [String], isHybrid: Bool = false, assetKey: String? = nil) {
         self.id = id
         self.element = element
         self.baseProduction = baseProduction
         self.tierNames = tierNames
         self.isHybrid = isHybrid
+        self.assetKey = assetKey ?? element.rawValue
+    }
+
+    /// Hybrids only have art from `FusionCatalog.minTier` up, since lower tiers
+    /// are unreachable.
+    func assetName(forTier tier: Int) -> String {
+        let lowest = isHybrid ? FusionCatalog.minTier : 0
+        let clamped = min(max(tier, lowest), tierNames.count - 1)
+        return "item_\(assetKey)_t\(clamped)"
     }
 
     /// Production triples with each tier, matching the old merge maths.
@@ -894,7 +906,7 @@ enum ItemCatalog {
             baseProduction: 4.0,
             tierNames: ["Squall", "Sleet", "Hailstorm", "Tempest",
                         "Cyclone", "Maelstrom", "Stormcrown", "Eye of Winter"],
-            isHybrid: true
+            isHybrid: true, assetKey: "tempest"
         ),
         ItemChain(
             id: "infernal_hybrid",
@@ -902,7 +914,7 @@ enum ItemCatalog {
             baseProduction: 4.5,
             tierNames: ["Scorch", "Blacksoot", "Pyre", "Infernal Rift",
                         "Hellforge", "Nova Heart", "Cinder Throne", "Ashen God"],
-            isHybrid: true
+            isHybrid: true, assetKey: "infernal"
         ),
         ItemChain(
             id: "aurora_hybrid",
@@ -910,7 +922,7 @@ enum ItemCatalog {
             baseProduction: 5.0,
             tierNames: ["Shimmer", "Veil", "Corona Veil", "Aurora",
                         "Polar Crown", "Spectrum", "Lightfall", "Firmament"],
-            isHybrid: true
+            isHybrid: true, assetKey: "aurora"
         ),
         ItemChain(
             id: "eclipse_hybrid",
@@ -918,7 +930,7 @@ enum ItemCatalog {
             baseProduction: 6.0,
             tierNames: ["Umbra", "Penumbra", "Shadowlight", "Eclipse",
                         "Black Sun", "Devourer", "Endless Night", "Final Dark"],
-            isHybrid: true
+            isHybrid: true, assetKey: "eclipse"
         )
     ]
 
@@ -2917,13 +2929,16 @@ struct CelestialItemSprite: View {
 
     private var baseColor: Color { item.element.tint }
 
-    /// Asset name for this element/tier, e.g. `item_fire_t3`.
+    /// Asset name for this chain and tier, e.g. `item_fire_t3`, `item_eclipse_t5`.
     private var assetName: String {
-        "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
+        guard let chain = ItemCatalog.chain(for: item.chainID) else {
+            return "item_\(item.element.rawValue)_t\(min(item.tier, 7))"
+        }
+        return chain.assetName(forTier: item.tier)
     }
 
-    /// Hybrids have no artwork of their own yet — they borrow their element's,
-    /// so they need a mark to be tellable apart at a glance.
+    /// Hybrids now have their own artwork, but the ring still marks them out as
+    /// the rarer thing on a crowded board.
     private var isHybrid: Bool {
         ItemCatalog.chain(for: item.chainID)?.isHybrid ?? false
     }
