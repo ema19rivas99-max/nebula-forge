@@ -252,6 +252,49 @@ final class EconomyTests: XCTestCase {
                           OfferCatalog.current(now: nextWindow)?.expiresAt)
     }
 
+    func testGoalIDsAreUniqueAndAllPayOut() {
+        let ids = GoalCatalog.all.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "two goals share an id")
+        for goal in GoalCatalog.all {
+            XCTAssertGreaterThan(goal.target, 0, "\(goal.id) has no target")
+            XCTAssertGreaterThan(goal.shardReward + goal.gemReward, 0,
+                                 "\(goal.id) rewards nothing")
+        }
+    }
+
+    func testEveryGoalCategoryHasGoals() {
+        for category in Goal.Category.allCases {
+            XCTAssertFalse(GoalCatalog.inCategory(category).isEmpty,
+                           "\(category.rawValue) is an empty tab")
+        }
+    }
+
+    func testDailyQuestsAreThreeAndDistinct() {
+        let quests = DailyQuestCatalog.today()
+        XCTAssertEqual(quests.count, 3)
+        XCTAssertEqual(Set(quests.map(\.id)).count, 3, "the same quest twice in one day")
+    }
+
+    func testDailyQuestsAreStableWithinADayAndRotateAcross() {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let sameDay = day.addingTimeInterval(3600)
+        let nextDay = day.addingTimeInterval(86_400)
+
+        XCTAssertEqual(DailyQuestCatalog.today(day).map(\.id),
+                       DailyQuestCatalog.today(sameDay).map(\.id),
+                       "quests must not reroll during the day")
+        XCTAssertNotEqual(DailyQuestCatalog.today(day).map(\.id),
+                          DailyQuestCatalog.today(nextDay).map(\.id),
+                          "quests must change day to day")
+    }
+
+    func testEveryQuestPaysGems() {
+        for quest in DailyQuestCatalog.pool {
+            XCTAssertGreaterThan(quest.gemReward, 0, "\(quest.id) pays nothing")
+            XCTAssertGreaterThan(quest.target, 0)
+        }
+    }
+
     func testGemOffersAllCostSomething() {
         for offer in GemShopCatalog.all {
             XCTAssertGreaterThan(offer.gemCost, 0, "\(offer.id) is free")

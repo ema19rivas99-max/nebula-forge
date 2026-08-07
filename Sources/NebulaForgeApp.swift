@@ -263,6 +263,15 @@ class GameCenterManager: NSObject, ObservableObject {
     /// button — the app looks frozen with no way back. The guard is the fix; the
     /// button is also disabled in the UI while unauthenticated so the tap isn't
     /// silently ignored.
+    /// Retries authentication. GameKit's handler fires once per launch, so a
+    /// player who signs in from Settings mid-session has no other way back in.
+    func retryAuthentication() {
+        guard !isAuthenticated else { return }
+        GKLocalPlayer.local.authenticateHandler = { [weak self] _, _ in
+            self?.playerAuthenticated()
+        }
+    }
+
     func showLeaderboard() {
         guard isAuthenticated else { return }
 
@@ -1070,13 +1079,35 @@ enum Element: String, CaseIterable, Codable {
 /// A milestone the player works toward. Progress is derived from game state
 /// rather than tracked separately, so goals can never desync from reality.
 struct Goal: Identifiable {
+    enum Category: String, CaseIterable, Identifiable {
+        case merging = "Merging"
+        case building = "Building"
+        case prestige = "Prestige"
+        case habit = "Habit"
+        var id: String { rawValue }
+    }
+
     let id: String
     let title: String
     let detail: String
     let target: Int
     let shardReward: Int
     let gemReward: Int
+    let category: Category
     let progress: (GameViewModel) -> Int
+
+    init(id: String, title: String, detail: String, target: Int,
+         shardReward: Int, gemReward: Int, category: Category = .merging,
+         progress: @escaping (GameViewModel) -> Int) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.target = target
+        self.shardReward = shardReward
+        self.gemReward = gemReward
+        self.category = category
+        self.progress = progress
+    }
 
     func currentProgress(_ vm: GameViewModel) -> Int {
         min(progress(vm), target)
@@ -1088,31 +1119,161 @@ struct Goal: Identifiable {
 }
 
 enum GoalCatalog {
+    /// Every goal pays some gems past the earliest few. That's deliberate: a
+    /// player who has never held gems has no idea what they're for, and the
+    /// shop may as well not exist. Earning a handful early is what makes the
+    /// gem packs legible later.
     static let all: [Goal] = [
+        // MARK: Merging
         Goal(id: "merge_1", title: "First Fusion", detail: "Merge two items together",
-             target: 1, shardReward: 3, gemReward: 0) { $0.totalMerges },
-        Goal(id: "place_5", title: "Taking Shape", detail: "Have 5 items on the board at once",
-             target: 5, shardReward: 5, gemReward: 0) { $0.placedCount },
-        Goal(id: "merge_10", title: "Forge Master", detail: "Complete 10 merges",
-             target: 10, shardReward: 10, gemReward: 1) { $0.totalMerges },
+             target: 1, shardReward: 3, gemReward: 0, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_10", title: "Getting Warm", detail: "Complete 10 merges",
+             target: 10, shardReward: 10, gemReward: 1, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_50", title: "Practised Hand", detail: "Complete 50 merges",
+             target: 50, shardReward: 30, gemReward: 3, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_100", title: "Century", detail: "Complete 100 merges",
+             target: 100, shardReward: 60, gemReward: 5, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_500", title: "Forge Master", detail: "Complete 500 merges",
+             target: 500, shardReward: 200, gemReward: 15, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_2000", title: "The Long Work", detail: "Complete 2,000 merges",
+             target: 2000, shardReward: 750, gemReward: 40, category: .merging) { $0.totalMerges },
+
         Goal(id: "tier_3", title: "Rising Power", detail: "Create a tier 3 item",
-             target: 1, shardReward: 15, gemReward: 2) { vm in
-                 vm.highestTierReached >= 3 ? 1 : 0 },
+             target: 3, shardReward: 15, gemReward: 2, category: .merging) { $0.highestTierReached },
+        Goal(id: "tier_5", title: "Stellar Architect", detail: "Create a tier 5 item",
+             target: 5, shardReward: 40, gemReward: 5, category: .merging) { $0.highestTierReached },
+        Goal(id: "tier_6", title: "Deep Fusion", detail: "Create a tier 6 item",
+             target: 6, shardReward: 90, gemReward: 10, category: .merging) { $0.highestTierReached },
+        Goal(id: "tier_7", title: "Ascendant", detail: "Reach the end of a chain",
+             target: 7, shardReward: 250, gemReward: 25, category: .merging) { $0.highestTierReached },
+
         Goal(id: "fusion_1", title: "Crossed Streams",
              detail: "Fuse two different elements into a hybrid",
-             target: 1, shardReward: 30, gemReward: 4) { min($0.totalFusions, 1) },
+             target: 1, shardReward: 30, gemReward: 4, category: .merging) { $0.totalFusions },
+        Goal(id: "fusion_10", title: "Alchemist", detail: "Complete 10 fusions",
+             target: 10, shardReward: 90, gemReward: 10, category: .merging) { $0.totalFusions },
+        Goal(id: "fusion_50", title: "Opposites Attract", detail: "Complete 50 fusions",
+             target: 50, shardReward: 300, gemReward: 25, category: .merging) { $0.totalFusions },
+        Goal(id: "hybrids_all", title: "Full Spectrum",
+             detail: "Discover all four hybrid chains",
+             target: 4, shardReward: 400, gemReward: 40, category: .merging) {
+                 $0.discoveredHybridIDs.count },
+
+        // MARK: Building
+        Goal(id: "place_5", title: "Taking Shape", detail: "Have 5 items on the board at once",
+             target: 5, shardReward: 5, gemReward: 0, category: .building) { $0.placedCount },
         Goal(id: "place_10", title: "Constellation", detail: "Have 10 items on the board at once",
-             target: 10, shardReward: 20, gemReward: 2) { $0.placedCount },
-        Goal(id: "streak_3", title: "Regular Orbit", detail: "Collect the daily reward 3 days running",
-             target: 3, shardReward: 25, gemReward: 5) { $0.dailyStreak },
+             target: 10, shardReward: 20, gemReward: 2, category: .building) { $0.placedCount },
+        Goal(id: "place_20", title: "Crowded Sky", detail: "Have 20 items on the board at once",
+             target: 20, shardReward: 120, gemReward: 12, category: .building) { $0.placedCount },
+        Goal(id: "tiles_15", title: "Room to Grow", detail: "Unlock 15 tiles",
+             target: 15, shardReward: 50, gemReward: 5, category: .building) { $0.unlockedTileCount },
+        Goal(id: "tiles_25", title: "The Whole Sky", detail: "Unlock every tile",
+             target: 25, shardReward: 300, gemReward: 30, category: .building) { $0.unlockedTileCount },
+        Goal(id: "forge_50", title: "Industrious", detail: "Forge 50 items",
+             target: 50, shardReward: 40, gemReward: 4, category: .building) { $0.lifetimeForged },
+        Goal(id: "forge_250", title: "Foundry", detail: "Forge 250 items",
+             target: 250, shardReward: 180, gemReward: 15, category: .building) { $0.lifetimeForged },
+        Goal(id: "rate_1k", title: "Steady Output", detail: "Reach 1,000 Stardust per second",
+             target: 1000, shardReward: 60, gemReward: 6, category: .building) {
+                 Int(min($0.idleEngine.totalProductionPerSec, 1_000_000)) },
+        Goal(id: "rate_100k", title: "Industrial Scale",
+             detail: "Reach 100,000 Stardust per second",
+             target: 100_000, shardReward: 400, gemReward: 35, category: .building) {
+                 Int(min($0.idleEngine.totalProductionPerSec, 10_000_000)) },
+
+        // MARK: Prestige
         Goal(id: "prestige_1", title: "Reborn", detail: "Trigger your first Supernova",
-             target: 1, shardReward: 25, gemReward: 5) { $0.galaxyMarks > 0 ? 1 : 0 },
-        Goal(id: "tier_5", title: "Stellar Architect", detail: "Create a tier 5 item",
-             target: 1, shardReward: 40, gemReward: 5) { vm in
-                 vm.highestTierReached >= 5 ? 1 : 0 },
-        Goal(id: "merge_100", title: "Century", detail: "Complete 100 merges",
-             target: 100, shardReward: 60, gemReward: 10) { $0.totalMerges }
+             target: 1, shardReward: 25, gemReward: 5, category: .prestige) { $0.prestigeCount },
+        Goal(id: "prestige_5", title: "Cycle of Stars", detail: "Trigger 5 Supernovas",
+             target: 5, shardReward: 150, gemReward: 15, category: .prestige) { $0.prestigeCount },
+        Goal(id: "prestige_25", title: "Eternal Return", detail: "Trigger 25 Supernovas",
+             target: 25, shardReward: 600, gemReward: 50, category: .prestige) { $0.prestigeCount },
+        Goal(id: "marks_25", title: "Marked", detail: "Earn 25 Galaxy Marks",
+             target: 25, shardReward: 100, gemReward: 10, category: .prestige) { $0.galaxyMarks },
+        Goal(id: "marks_200", title: "Cosmic Architect", detail: "Earn 200 Galaxy Marks",
+             target: 200, shardReward: 500, gemReward: 45, category: .prestige) { $0.galaxyMarks },
+        Goal(id: "upgrades_all", title: "Fully Equipped",
+             detail: "Max out every permanent upgrade",
+             target: UpgradeCatalog.all.reduce(0) { $0 + $1.maxLevel },
+             shardReward: 800, gemReward: 75, category: .prestige) { vm in
+                 UpgradeCatalog.all.reduce(0) { $0 + vm.upgradeLevel($1.id) } },
+
+        // MARK: Habit
+        Goal(id: "streak_3", title: "Regular Orbit", detail: "Collect the daily reward 3 days running",
+             target: 3, shardReward: 25, gemReward: 5, category: .habit) { $0.dailyStreak },
+        Goal(id: "streak_7", title: "Full Week", detail: "Reach a 7-day streak",
+             target: 7, shardReward: 120, gemReward: 20, category: .habit) { $0.dailyStreak },
+        Goal(id: "comet_1", title: "Quick Hands", detail: "Catch a comet",
+             target: 1, shardReward: 15, gemReward: 2, category: .habit) { $0.cometsCaught },
+        Goal(id: "comet_25", title: "Comet Hunter", detail: "Catch 25 comets",
+             target: 25, shardReward: 100, gemReward: 12, category: .habit) { $0.cometsCaught },
+        Goal(id: "comet_100", title: "Nothing Gets Past You", detail: "Catch 100 comets",
+             target: 100, shardReward: 400, gemReward: 40, category: .habit) { $0.cometsCaught },
+        Goal(id: "themes_3", title: "Redecorated", detail: "Own 3 themes",
+             target: 3, shardReward: 60, gemReward: 5, category: .habit) { $0.ownedThemeIDs.count },
+        Goal(id: "themes_6", title: "Interior Designer", detail: "Own 6 themes",
+             target: 6, shardReward: 200, gemReward: 20, category: .habit) { $0.ownedThemeIDs.count },
     ]
+
+    static func inCategory(_ category: Goal.Category) -> [Goal] {
+        all.filter { $0.category == category }
+    }
+}
+
+// MARK: - Daily quests
+/// Three short tasks that reset every day and pay gems.
+///
+/// This is the main way a free player accumulates gems, and it is the whole
+/// reason the shop means anything to them: someone who has never held gems has
+/// no reason to look at what gems buy.
+struct DailyQuest: Identifiable {
+    let id: String
+    let title: String
+    let icon: String
+    let target: Int
+    let gemReward: Int
+    /// Measured against counters that reset at midnight.
+    let progress: (GameViewModel) -> Int
+
+    func currentProgress(_ vm: GameViewModel) -> Int { min(progress(vm), target) }
+    func isComplete(_ vm: GameViewModel) -> Bool { progress(vm) >= target }
+}
+
+enum DailyQuestCatalog {
+    static let pool: [DailyQuest] = [
+        DailyQuest(id: "q_merge_20", title: "Merge 20 items", icon: "circle.grid.cross.fill",
+                   target: 20, gemReward: 4) { $0.todayMerges },
+        DailyQuest(id: "q_merge_60", title: "Merge 60 items", icon: "circle.grid.cross.fill",
+                   target: 60, gemReward: 8) { $0.todayMerges },
+        DailyQuest(id: "q_fuse_2", title: "Complete 2 fusions", icon: "wand.and.stars",
+                   target: 2, gemReward: 6) { $0.todayFusions },
+        DailyQuest(id: "q_forge_10", title: "Forge 10 items", icon: "hammer.fill",
+                   target: 10, gemReward: 4) { $0.todayForged },
+        DailyQuest(id: "q_comet_3", title: "Catch 3 comets", icon: "sparkles",
+                   target: 3, gemReward: 6) { $0.todayComets },
+        DailyQuest(id: "q_prestige_1", title: "Trigger a Supernova", icon: "burst.fill",
+                   target: 1, gemReward: 10) { $0.todayPrestiges },
+        DailyQuest(id: "q_tile_1", title: "Unlock a tile", icon: "lock.open.fill",
+                   target: 1, gemReward: 5) { $0.todayTilesUnlocked },
+    ]
+
+    /// Three quests, chosen by the calendar day so they're the same on every
+    /// device and can't be rerolled by reinstalling.
+    static func today(_ date: Date = Date()) -> [DailyQuest] {
+        let day = Int(date.timeIntervalSince1970 / 86_400)
+        guard pool.count >= 3 else { return pool }
+        var picked: [DailyQuest] = []
+        var index = abs(day) % pool.count
+        while picked.count < 3 {
+            let candidate = pool[index % pool.count]
+            if !picked.contains(where: { $0.id == candidate.id }) {
+                picked.append(candidate)
+            }
+            index += 1
+        }
+        return picked
+    }
 }
 
 // MARK: - Prestige Upgrades
@@ -1514,7 +1675,25 @@ class GameViewModel: ObservableObject {
 
     @Published var totalMerges: Int = 0
     @Published var totalFusions: Int = 0
+    /// Resets each Supernova, because it drives the forge price.
     @Published var itemsForged: Int = 0
+    /// Never resets — goals measure the whole career, not the current run.
+    @Published var lifetimeForged: Int = 0
+    @Published var cometsCaught: Int = 0
+    @Published var prestigeCount: Int = 0
+    /// Which hybrid chains have ever been created, for the collection goal.
+    @Published var discoveredHybridIDs: Set<String> = []
+
+    // Daily quest counters. Reset at midnight rather than being derived, since
+    // "today" isn't recoverable from lifetime totals.
+    @Published var todayMerges: Int = 0
+    @Published var todayFusions: Int = 0
+    @Published var todayForged: Int = 0
+    @Published var todayComets: Int = 0
+    @Published var todayPrestiges: Int = 0
+    @Published var todayTilesUnlocked: Int = 0
+    @Published var claimedQuestIDs: Set<String> = []
+    private var questDay: Date?
     @Published var highestTierReached: Int = 0
     @Published var claimedGoalIDs: Set<String> = []
     @Published var upgradeLevels: [String: Int] = [:]
@@ -1635,6 +1814,13 @@ class GameViewModel: ObservableObject {
         static let hasPrestiged = "nf.hasPrestiged"
         static let totalMerges = "nf.totalMerges"
         static let totalFusions = "nf.totalFusions"
+        static let lifetimeForged = "nf.lifetimeForged"
+        static let cometsCaught = "nf.cometsCaught"
+        static let prestigeCount = "nf.prestigeCount"
+        static let discoveredHybrids = "nf.discoveredHybrids"
+        static let questDay = "nf.questDay"
+        static let claimedQuests = "nf.claimedQuests"
+        static let todayCounters = "nf.todayCounters"
         static let itemsForged = "nf.itemsForged"
         static let highestTierReached = "nf.highestTierReached"
         static let claimedGoalIDs = "nf.claimedGoalIDs"
@@ -1662,6 +1848,7 @@ class GameViewModel: ObservableObject {
             restore(from: cloud, force: !hadLocalSave)
         }
         refreshDailyReward()
+        rollQuestDayIfNeeded()
 
         // Another device saving while this one is open.
         CloudSaveManager.shared.onRemoteSave = { [weak self] snapshot in
@@ -1726,6 +1913,8 @@ class GameViewModel: ObservableObject {
         guard let active = comet, !active.isExpired else { return false }
         stardust += active.stardust
         starlightShards += active.shards
+        cometsCaught += 1
+        todayComets += 1
         comet = nil
         announceMerge("Comet caught   +\(abbreviatedNumber(active.stardust))")
         Feedback.comet()
@@ -1861,7 +2050,14 @@ class GameViewModel: ObservableObject {
         let shardsGained = max(1, merged.tier * 2) * shardYieldMultiplier * fusionBonus
         starlightShards += shardsGained
         totalMerges += 1
-        if isFusion { totalFusions += 1 }
+        todayMerges += 1
+        if isFusion {
+            totalFusions += 1
+            todayFusions += 1
+        }
+        if ItemCatalog.chain(for: merged.chainID)?.isHybrid == true {
+            discoveredHybridIDs.insert(merged.chainID)
+        }
         highestTierReached = max(highestTierReached, merged.tier)
 
         announceMerge("\(isFusion ? "FUSION · " : "")\(merged.name)   +\(shardsGained)")
@@ -1877,6 +2073,7 @@ class GameViewModel: ObservableObject {
         for row in gridTiles.indices {
             for col in gridTiles[row].indices where !gridTiles[row][col].isUnlocked {
                 gridTiles[row][col].isUnlocked = true
+                todayTilesUnlocked += 1
                 return true
             }
         }
@@ -1926,6 +2123,8 @@ class GameViewModel: ObservableObject {
         guard stardust >= forgeItemCost else { return false }
         stardust -= forgeItemCost
         itemsForged += 1
+        lifetimeForged += 1
+        todayForged += 1
         spawnOnBoard(randomStarterItem())
         Feedback.forge()
         saveGameState()
@@ -2192,6 +2391,51 @@ class GameViewModel: ObservableObject {
 
     var placedCount: Int { placedEntries.count }
 
+    var unlockedTileCount: Int {
+        gridTiles.flatMap { $0 }.filter(\.isUnlocked).count
+    }
+
+    /// Today's three quests, with the ones already collected still listed so the
+    /// player can see they finished them.
+    var todayQuests: [DailyQuest] { DailyQuestCatalog.today() }
+
+    var claimableQuests: [DailyQuest] {
+        todayQuests.filter { $0.isComplete(self) && !claimedQuestIDs.contains($0.id) }
+    }
+
+    @discardableResult
+    func claimQuest(_ quest: DailyQuest) -> Bool {
+        guard quest.isComplete(self), !claimedQuestIDs.contains(quest.id) else { return false }
+        claimedQuestIDs.insert(quest.id)
+        nebulaGems += quest.gemReward
+        announceMerge("Quest complete   +\(quest.gemReward) Gems")
+        Feedback.goal()
+        saveGameState()
+        return true
+    }
+
+    /// Re-evaluates everything that turns over at midnight. Called on launch
+    /// and whenever the app comes back to the foreground, since a session can
+    /// easily straddle a day boundary.
+    func refreshDailyState() {
+        refreshDailyReward()
+        rollQuestDayIfNeeded()
+    }
+
+    /// Zeroes the daily counters when the calendar day turns over.
+    private func rollQuestDayIfNeeded() {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard questDay != today else { return }
+        questDay = today
+        todayMerges = 0
+        todayFusions = 0
+        todayForged = 0
+        todayComets = 0
+        todayPrestiges = 0
+        todayTilesUnlocked = 0
+        claimedQuestIDs = []
+    }
+
     var freeUnlockedTiles: [GridTile] {
         gridTiles.flatMap { $0 }.filter { $0.isUnlocked && $0.placedItem == nil }
     }
@@ -2278,6 +2522,8 @@ class GameViewModel: ObservableObject {
 
         let earnedMarks = potentialMarks
         galaxyMarks += earnedMarks
+        prestigeCount += 1
+        todayPrestiges += 1
 
         // Forge price is per-run. Leaving this as a lifetime counter meant a
         // Supernova reset the board but kept the exponential price, so each
@@ -2317,6 +2563,21 @@ class GameViewModel: ObservableObject {
         defaults.set(hasPrestiged, forKey: DefaultsKey.hasPrestiged)
         defaults.set(totalMerges, forKey: DefaultsKey.totalMerges)
         defaults.set(totalFusions, forKey: DefaultsKey.totalFusions)
+        defaults.set(lifetimeForged, forKey: DefaultsKey.lifetimeForged)
+        defaults.set(cometsCaught, forKey: DefaultsKey.cometsCaught)
+        defaults.set(prestigeCount, forKey: DefaultsKey.prestigeCount)
+        defaults.set(Array(discoveredHybridIDs), forKey: DefaultsKey.discoveredHybrids)
+        defaults.set(Array(claimedQuestIDs), forKey: DefaultsKey.claimedQuests)
+        if let questDay {
+            defaults.set(questDay, forKey: DefaultsKey.questDay)
+        }
+        // One dictionary rather than six keys — they're written and cleared
+        // together, so they may as well travel together.
+        defaults.set([
+            "merges": todayMerges, "fusions": todayFusions, "forged": todayForged,
+            "comets": todayComets, "prestiges": todayPrestiges,
+            "tiles": todayTilesUnlocked,
+        ], forKey: DefaultsKey.todayCounters)
         defaults.set(itemsForged, forKey: DefaultsKey.itemsForged)
         defaults.set(highestTierReached, forKey: DefaultsKey.highestTierReached)
         defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
@@ -2527,6 +2788,24 @@ class GameViewModel: ObservableObject {
         hasPrestiged = defaults.bool(forKey: DefaultsKey.hasPrestiged)
         totalMerges = defaults.integer(forKey: DefaultsKey.totalMerges)
         totalFusions = defaults.integer(forKey: DefaultsKey.totalFusions)
+        cometsCaught = defaults.integer(forKey: DefaultsKey.cometsCaught)
+        prestigeCount = defaults.integer(forKey: DefaultsKey.prestigeCount)
+        discoveredHybridIDs = Set(defaults.stringArray(forKey: DefaultsKey.discoveredHybrids) ?? [])
+        claimedQuestIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedQuests) ?? [])
+        questDay = defaults.object(forKey: DefaultsKey.questDay) as? Date
+        // Saves written before lifetime forging was tracked separately fall back
+        // to the per-run count, which is the closest honest answer.
+        let storedLifetime = defaults.integer(forKey: DefaultsKey.lifetimeForged)
+        lifetimeForged = max(storedLifetime, defaults.integer(forKey: DefaultsKey.itemsForged))
+
+        if let counters = defaults.dictionary(forKey: DefaultsKey.todayCounters) as? [String: Int] {
+            todayMerges = counters["merges"] ?? 0
+            todayFusions = counters["fusions"] ?? 0
+            todayForged = counters["forged"] ?? 0
+            todayComets = counters["comets"] ?? 0
+            todayPrestiges = counters["prestiges"] ?? 0
+            todayTilesUnlocked = counters["tiles"] ?? 0
+        }
         itemsForged = defaults.integer(forKey: DefaultsKey.itemsForged)
         highestTierReached = defaults.integer(forKey: DefaultsKey.highestTierReached)
         claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
@@ -2660,7 +2939,7 @@ struct ContentView: View {
                 .tabItem {
                     Label("Goals", systemImage: "target")
                 }
-                .badge(gameVM.claimableGoals.count)
+                .badge(gameVM.claimableGoals.count + gameVM.claimableQuests.count)
                 .tag(2)
 
             ShopView()
@@ -2707,6 +2986,10 @@ struct ContentView: View {
                 gameVM.flushToCloud()
             case .active:
                 NotificationManager.shared.clearBadge()
+                // Catches someone who signed into Game Center while away, and
+                // rolls the daily quests over if midnight passed.
+                GameCenterManager.shared.retryAuthentication()
+                gameVM.refreshDailyState()
                 Task { await IAPManager.shared.refreshEntitlements() }
             default:
                 break
@@ -2788,12 +3071,20 @@ struct GoalsView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                CosmicBackground()
+                CosmicBackground(theme: gameVM.theme)
 
                 ScrollView {
-                    VStack(spacing: 12) {
-                        ForEach(GoalCatalog.all) { goal in
-                            GoalRow(goal: goal)
+                    VStack(alignment: .leading, spacing: 12) {
+                        dailySection
+
+                        ForEach(Goal.Category.allCases) { category in
+                            let goals = GoalCatalog.inCategory(category)
+                            if !goals.isEmpty {
+                                sectionHeader(category.rawValue,
+                                              done: goals.filter { gameVM.claimedGoalIDs.contains($0.id) }.count,
+                                              total: goals.count)
+                                ForEach(goals) { GoalRow(goal: $0) }
+                            }
                         }
                     }
                     .padding()
@@ -2801,6 +3092,97 @@ struct GoalsView: View {
             }
             .navigationTitle("Goals")
         }
+    }
+
+    private func sectionHeader(_ title: String, done: Int, total: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(.headline)
+                .foregroundColor(.white)
+            Spacer()
+            Text("\(done)/\(total)")
+                .font(.caption.bold())
+                .foregroundColor(.white.opacity(0.55))
+        }
+        .padding(.top, 8)
+    }
+
+    /// Daily quests sit above the permanent goals because they're the thing
+    /// that's gone tomorrow.
+    private var dailySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Today")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Spacer()
+                Text("resets at midnight")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+
+            ForEach(gameVM.todayQuests) { quest in
+                QuestRow(quest: quest)
+            }
+        }
+    }
+}
+
+struct QuestRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let quest: DailyQuest
+
+    private var claimed: Bool { gameVM.claimedQuestIDs.contains(quest.id) }
+    private var complete: Bool { quest.isComplete(gameVM) }
+    private var progress: Int { quest.currentProgress(gameVM) }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: claimed ? "checkmark.seal.fill" : quest.icon)
+                .font(.title3)
+                .foregroundColor(claimed ? .green : .yellow)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(quest.title)
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                if !claimed {
+                    ProgressView(value: Double(progress), total: Double(quest.target))
+                        .tint(complete ? .yellow : .blue)
+                    Text("\(progress) / \(quest.target)")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+
+            Spacer()
+
+            if claimed {
+                Text("Done")
+                    .font(.caption2.bold())
+                    .foregroundColor(.green)
+            } else if complete {
+                Button {
+                    gameVM.claimQuest(quest)
+                } label: {
+                    Label("\(quest.gemReward)", systemImage: "diamond.fill")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+            } else {
+                Label("\(quest.gemReward)", systemImage: "diamond.fill")
+                    .font(.caption)
+                    .foregroundColor(.purple.opacity(0.8))
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(complete && !claimed ? Color.yellow.opacity(0.7) : Color.clear, lineWidth: 1.5))
+        .cornerRadius(14)
+        .opacity(claimed ? 0.6 : 1)
     }
 }
 
@@ -3377,6 +3759,7 @@ struct GalacticCanvasView: View {
     @State private var blockReason: String?
     @State private var showTutorial = false
     @State private var showSettings = false
+    @State private var showGameCenterHelp = false
 
     private var selectedItem: CelestialItem? {
         selectedPosition.flatMap { item(at: $0) }
@@ -3496,12 +3879,19 @@ struct GalacticCanvasView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        GameCenterManager.shared.showLeaderboard()
+                        // Always does something. Disabling it entirely meant a
+                        // player who wasn't signed in just had a dead button
+                        // and no idea why.
+                        if gameCenter.isAuthenticated {
+                            GameCenterManager.shared.showLeaderboard()
+                        } else {
+                            gameCenter.retryAuthentication()
+                            showGameCenterHelp = true
+                        }
                     } label: {
                         Image(systemName: "trophy.fill")
                             .foregroundColor(gameCenter.isAuthenticated ? .yellow : .gray)
                     }
-                    .disabled(!gameCenter.isAuthenticated)
                 }
             }
             .sheet(isPresented: $showTutorial) {
@@ -3509,6 +3899,16 @@ struct GalacticCanvasView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView().environmentObject(gameVM)
+            }
+            .alert("Leaderboards need Game Center", isPresented: $showGameCenterHelp) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                Button("Not now", role: .cancel) { }
+            } message: {
+                Text("Sign in to Game Center to see how your galaxy ranks. Your scores are already being recorded and will appear once you do.")
             }
         }
     }
