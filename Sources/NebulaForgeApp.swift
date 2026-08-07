@@ -199,7 +199,10 @@ struct PrivacyPolicyView: View {
 
                         Text("5. Contact")
                             .font(.headline)
-                        Text("Email: privacy@nebulaforgegame.com")
+                        // Must be an address that actually receives mail —
+                        // App Review checks it, and nebulaforgegame.com was
+                        // never a domain we owned.
+                        Text("Email: emanuelrivas199@gmail.com")
 
                         Text("6. Children's Privacy")
                             .font(.headline)
