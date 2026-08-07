@@ -288,9 +288,15 @@ final class FormattingTests: XCTestCase {
     }
 
     func testClampedScoreNeverTraps() {
+        // Infinity fails the isFinite guard before the clamp is reached, so it
+        // comes back as 0 rather than the ceiling.
+        XCTAssertEqual(clampedScore(.infinity), 0)
         XCTAssertEqual(clampedScore(.nan), 0)
-        XCTAssertEqual(clampedScore(.infinity), 9_000_000_000_000_000_000)
         XCTAssertEqual(clampedScore(-1), 0)
+        XCTAssertEqual(clampedScore(0), 0)
         XCTAssertEqual(clampedScore(1234.7), 1234)
+
+        // A finite but absurd value is what the clamp actually exists for.
+        XCTAssertEqual(clampedScore(1e30), 9_000_000_000_000_000_000)
     }
 }
