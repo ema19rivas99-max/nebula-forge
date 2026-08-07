@@ -9,7 +9,7 @@ so **no Swift change is needed** — generate 52, cut, write imagesets, commit.
 - [x] `anime`   Anime Ink   (shipped earlier)
 - [x] `cyber`   Cyberpunk   (commit 1828e60)
 - [x] `medieval` Medieval   (commit ab9e21a)
-- [ ] `fantasy` High Fantasy
+- [x] `fantasy` High Fantasy (commit e1ca801)
 - [ ] `dragon`  Dragonscale
 - [ ] `frost`   Frostbound
 - [ ] `eldritch` Eldritch
@@ -36,6 +36,10 @@ Result URLs look like:
 - **Failures are silent job failures, not errors.** Track indices, retry the
   gaps. Failed jobs do not consume credits — Cyberpunk's 52 sprites plus 6
   style probes cost 87.5 credits total, about 1.5 per delivered image.
+- **State the palette as a prohibition, not a preference.** A style with its
+  own colour cast overrules a palette that is merely mentioned — High
+  Fantasy's storybook cream swallowed the ice chain until the prompt said
+  "colour it strongly blue, not white, not cream". Name what it must not be.
 - **Lock the palette per element.** Generic style colour destroys the board's
   at-a-glance element read — the first Cyberpunk pass produced a Fire item
   indistinguishable from a Void one.
