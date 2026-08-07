@@ -4,6 +4,7 @@ import GameKit
 import CoreData
 import Combine
 import SpriteKit
+import AVFoundation
 
 // MARK: - App Entry Point & Privacy Compliance
 @main
@@ -30,6 +31,11 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         // Initialize Game Center
         authenticateGameCenterPlayer()
+
+        // Warm the players for the effects that fire soonest, so the first
+        // merge of a session isn't the one that stutters.
+        HapticManager.shared.prepare()
+        AudioManager.shared.preload()
 
         // StoreKit transaction updates are observed by IAPManager, which owns
         // the exactly-once grant bookkeeping. A second listener here meant every
@@ -1561,7 +1567,7 @@ class GameViewModel: ObservableObject {
         let payout = max(25, idleEngine.totalProductionPerSec * 90)
         comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
                       lifetime: Self.cometLifetime, stardust: payout, shards: 3)
-        HapticManager.shared.itemPlace()
+        Feedback.place()
     }
 
     @discardableResult
@@ -1571,7 +1577,7 @@ class GameViewModel: ObservableObject {
         starlightShards += active.shards
         comet = nil
         announceMerge("Comet caught   +\(abbreviatedNumber(active.stardust))")
-        HapticManager.shared.supernova()
+        Feedback.comet()
         saveGameState()
         return true
     }
@@ -1615,7 +1621,7 @@ class GameViewModel: ObservableObject {
         dailyStreak = reward.day
         lastDailyClaim = Date()
         pendingDailyReward = nil
-        HapticManager.shared.mergeSuccess()
+        Feedback.goal()
         saveGameState()
         return true
     }
@@ -1662,7 +1668,7 @@ class GameViewModel: ObservableObject {
               let source = gridTiles[from.row][from.col].placedItem,
               let target = gridTiles[to.row][to.col].placedItem,
               let merged = CelestialItem.merge(item1: source, item2: target) else {
-            HapticManager.shared.mergeFail()
+            Feedback.denied()
             return false
         }
 
@@ -1683,7 +1689,7 @@ class GameViewModel: ObservableObject {
     @discardableResult
     func attemptMerge(_ item1: CelestialItem, _ item2: CelestialItem) -> Bool {
         guard let merged = CelestialItem.merge(item1: item1, item2: item2) else {
-            HapticManager.shared.mergeFail()
+            Feedback.denied()
             return false
         }
 
@@ -1709,7 +1715,7 @@ class GameViewModel: ObservableObject {
         announceMerge("\(isFusion ? "FUSION · " : "")\(merged.name)   +\(shardsGained)")
         celestialRank = 1 + totalMerges / 10
 
-        HapticManager.shared.mergeSuccess()
+        Feedback.merge(isFusion: isFusion)
     }
 
     /// Unlocks the nearest locked tile. False when the grid is fully open.
@@ -1729,7 +1735,7 @@ class GameViewModel: ObservableObject {
     func unlockNextTile() -> Bool {
         guard starlightShards >= tileUnlockCost, unlockFirstLockedTile() else { return false }
         starlightShards -= tileUnlockCost
-        HapticManager.shared.itemPlace()
+        Feedback.place()
         saveGameState()
         return true
     }
@@ -1768,7 +1774,7 @@ class GameViewModel: ObservableObject {
         stardust -= forgeItemCost
         itemsForged += 1
         spawnOnBoard(randomStarterItem())
-        HapticManager.shared.itemPlace()
+        Feedback.forge()
         saveGameState()
         return true
     }
@@ -1779,7 +1785,7 @@ class GameViewModel: ObservableObject {
         guard nebulaGems >= itemSummonCost else { return false }
         nebulaGems -= itemSummonCost
         spawnOnBoard(randomStarterItem())
-        HapticManager.shared.itemPlace()
+        Feedback.place()
         saveGameState()
         return true
     }
@@ -1826,7 +1832,7 @@ class GameViewModel: ObservableObject {
 
         // Production upgrades change output immediately.
         syncUpgradeEffects()
-        HapticManager.shared.mergeSuccess()
+        Feedback.purchase()
         saveGameState()
         return true
     }
@@ -1861,7 +1867,7 @@ class GameViewModel: ObservableObject {
         if grant.gems > 0 || grant.shards > 0 {
             announceMerge("Purchase   +\(grant.gems) Gems")
         }
-        HapticManager.shared.supernova()
+        Feedback.purchase()
         saveGameState()
     }
 
@@ -1935,7 +1941,7 @@ class GameViewModel: ObservableObject {
 
         nebulaGems -= offer.gemCost
         syncUpgradeEffects()
-        HapticManager.shared.mergeSuccess()
+        Feedback.purchase()
         saveGameState()
         return true
     }
@@ -1967,7 +1973,7 @@ class GameViewModel: ObservableObject {
         nebulaGems -= theme.gemCost
         ownedThemeIDs.insert(theme.id)
         selectedThemeID = theme.id
-        HapticManager.shared.supernova()
+        Feedback.purchase()
         saveGameState()
         return true
     }
@@ -1976,7 +1982,7 @@ class GameViewModel: ObservableObject {
     func selectTheme(_ theme: CosmeticTheme) -> Bool {
         guard owns(theme) else { return false }
         selectedThemeID = theme.id
-        HapticManager.shared.itemPlace()
+        Feedback.place()
         saveGameState()
         return true
     }
@@ -1992,7 +1998,7 @@ class GameViewModel: ObservableObject {
         claimedGoalIDs.insert(goal.id)
         starlightShards += goal.shardReward
         nebulaGems += goal.gemReward
-        HapticManager.shared.mergeSuccess()
+        Feedback.goal()
         saveGameState()
         return true
     }
@@ -2113,7 +2119,7 @@ class GameViewModel: ObservableObject {
         // Submit prestige achievement
         GameCenterManager.shared.submitScore(Int64(galaxyMarks), leaderboardID: "nebulaforge.prestige")
 
-        HapticManager.shared.supernova()
+        Feedback.supernova()
 
         saveGameState()
         return true
@@ -2592,6 +2598,123 @@ struct OfflineEarningsView: View {
     }
 }
 
+// MARK: - Settings
+struct SettingsView: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    @Environment(\.dismiss) var dismiss
+    @ObservedObject private var audio = AudioManager.shared
+    @ObservedObject private var gameCenter = GameCenterManager.shared
+    @StateObject private var iapManager = IAPManager.shared
+    @State private var restoring = false
+
+    private var version: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                CosmicBackground(theme: gameVM.theme)
+
+                ScrollView {
+                    VStack(spacing: 14) {
+                        card {
+                            Toggle(isOn: Binding(
+                                get: { !audio.isMuted },
+                                set: { audio.isMuted = !$0 }
+                            )) {
+                                Label("Sound Effects", systemImage: "speaker.wave.2.fill")
+                                    .foregroundColor(.white)
+                            }
+                            .tint(.purple)
+                        }
+
+                        card {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Button {
+                                    restoring = true
+                                    Task {
+                                        await iapManager.restorePurchases()
+                                        restoring = false
+                                    }
+                                } label: {
+                                    HStack {
+                                        Label("Restore Purchases", systemImage: "arrow.clockwise")
+                                        Spacer()
+                                        if restoring { ProgressView().tint(.white) }
+                                    }
+                                    .foregroundColor(.white)
+                                }
+
+                                Divider().background(Color.white.opacity(0.2))
+
+                                HStack {
+                                    Label("Game Center", systemImage: "trophy.fill")
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    Text(gameCenter.isAuthenticated ? "Signed in" : "Not signed in")
+                                        .font(.caption)
+                                        .foregroundColor(gameCenter.isAuthenticated ? .green : .white.opacity(0.5))
+                                }
+                            }
+                        }
+
+                        card {
+                            VStack(alignment: .leading, spacing: 8) {
+                                statRow("Total merges", "\(gameVM.totalMerges)")
+                                statRow("Fusions", "\(gameVM.totalFusions)")
+                                statRow("Highest tier", "\(gameVM.highestTierReached)")
+                                statRow("Galaxy Marks", "\(gameVM.galaxyMarks)")
+                                statRow("Daily streak", "\(gameVM.dailyStreak)")
+                            }
+                        }
+
+                        card {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Link(destination: URL(string: "https://ema19rivas99-max.github.io/nebula-forge/privacy")!) {
+                                    Label("Privacy Policy", systemImage: "hand.raised.fill")
+                                }
+                                Link(destination: URL(string: "https://ema19rivas99-max.github.io/nebula-forge/support")!) {
+                                    Label("Support", systemImage: "questionmark.circle.fill")
+                                }
+                                Divider().background(Color.white.opacity(0.2))
+                                statRow("Version", version)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }.bold()
+                }
+            }
+        }
+    }
+
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial)
+            .cornerRadius(14)
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).foregroundColor(.white.opacity(0.75))
+            Spacer()
+            Text(value).foregroundColor(.white).bold()
+        }
+        .font(.subheadline)
+    }
+}
+
 // MARK: - Daily Reward
 /// The only thing in the game that rewards *when* you play. Everything else
 /// pays the same whenever you get to it, which gave the player no reason to
@@ -2865,6 +2988,7 @@ struct GalacticCanvasView: View {
     @State private var selectedTrayItemID: UUID?
     @State private var blockReason: String?
     @State private var showTutorial = false
+    @State private var showSettings = false
 
     private var selectedItem: CelestialItem? {
         selectedPosition.flatMap { item(at: $0) }
@@ -2967,11 +3091,19 @@ struct GalacticCanvasView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        showTutorial = true
-                    } label: {
-                        Image(systemName: "questionmark.circle")
-                            .foregroundColor(.white)
+                    HStack(spacing: 14) {
+                        Button {
+                            showTutorial = true
+                        } label: {
+                            Image(systemName: "questionmark.circle")
+                                .foregroundColor(.white)
+                        }
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape.fill")
+                                .foregroundColor(.white)
+                        }
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -2986,6 +3118,9 @@ struct GalacticCanvasView: View {
             }
             .sheet(isPresented: $showTutorial) {
                 TutorialView()
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView().environmentObject(gameVM)
             }
         }
     }
@@ -3957,6 +4092,120 @@ struct ShopProductRow: View {
         .padding()
         .background(.ultraThinMaterial)
         .cornerRadius(15)
+    }
+}
+
+// MARK: - Audio
+/// Plays the game's sound effects.
+///
+/// Each effect keeps a small pool of players because merges can overlap, and a
+/// single `AVAudioPlayer` restarting mid-sound clips the previous one off.
+final class AudioManager: ObservableObject {
+    static let shared = AudioManager()
+
+    @Published var isMuted: Bool {
+        didSet { UserDefaults.standard.set(isMuted, forKey: "nf.muted") }
+    }
+
+    private var pools: [String: [AVAudioPlayer]] = [:]
+    private var next: [String: Int] = [:]
+    private let poolSize = 3
+
+    private init() {
+        isMuted = UserDefaults.standard.bool(forKey: "nf.muted")
+        configureSession()
+    }
+
+    /// `.ambient` so the game mixes with whatever the player is already
+    /// listening to instead of stopping it.
+    private func configureSession() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default,
+                                                            options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Audio session setup failed: \(error)")
+        }
+    }
+
+    private func pool(for name: String) -> [AVAudioPlayer] {
+        if let existing = pools[name] { return existing }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav") else {
+            pools[name] = []
+            return []
+        }
+        var made: [AVAudioPlayer] = []
+        for _ in 0..<poolSize {
+            if let player = try? AVAudioPlayer(contentsOf: url) {
+                player.prepareToPlay()
+                made.append(player)
+            }
+        }
+        pools[name] = made
+        return made
+    }
+
+    func play(_ name: String, volume: Float = 1.0) {
+        guard !isMuted else { return }
+        let players = pool(for: name)
+        guard !players.isEmpty else { return }
+        let index = (next[name] ?? 0) % players.count
+        next[name] = index + 1
+        let player = players[index]
+        player.volume = volume
+        player.currentTime = 0
+        player.play()
+    }
+
+    /// Warms the players for the effects that fire soonest, so the first merge
+    /// of a session isn't the one that stutters.
+    func preload() {
+        for name in ["tap", "merge", "forge", "denied"] { _ = pool(for: name) }
+    }
+}
+
+// MARK: - Feedback
+/// One call site for "something happened", so haptics and audio can't drift
+/// apart.
+enum Feedback {
+    static func merge(isFusion: Bool) {
+        HapticManager.shared.mergeSuccess()
+        AudioManager.shared.play(isFusion ? "fusion" : "merge")
+    }
+
+    static func denied() {
+        HapticManager.shared.mergeFail()
+        AudioManager.shared.play("denied", volume: 0.7)
+    }
+
+    static func place() {
+        HapticManager.shared.itemPlace()
+        AudioManager.shared.play("tap", volume: 0.8)
+    }
+
+    static func forge() {
+        HapticManager.shared.itemPlace()
+        AudioManager.shared.play("forge")
+    }
+
+    static func supernova() {
+        HapticManager.shared.supernova()
+        AudioManager.shared.play("supernova")
+    }
+
+    static func comet() {
+        HapticManager.shared.supernova()
+        AudioManager.shared.play("comet")
+    }
+
+    static func purchase() {
+        HapticManager.shared.supernova()
+        AudioManager.shared.play("purchase")
+    }
+
+    static func goal() {
+        HapticManager.shared.mergeSuccess()
+        AudioManager.shared.play("goal")
     }
 }
 
