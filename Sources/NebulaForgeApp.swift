@@ -1562,6 +1562,7 @@ class GameViewModel: ObservableObject {
         return max(0, Int(surgeEndsAt.timeIntervalSinceNow))
     }
 
+    private var lastCloudPush: Date = .distantPast
     private var lastCometSpawn: Date = Date()
     private var lastDailyClaim: Date?
     /// Tracks the surge so its expiry can trigger exactly one resync.
@@ -1650,10 +1651,22 @@ class GameViewModel: ObservableObject {
 
     init() {
         setupIdleCollection()
-        if !loadGameState() {
+        let hadLocalSave = loadGameState()
+        if !hadLocalSave {
             initializeBoard()
         }
+
+        // A fresh install takes whatever iCloud has; an existing one only takes
+        // it if it's strictly newer.
+        if let cloud = CloudSaveManager.shared.load() {
+            restore(from: cloud, force: !hadLocalSave)
+        }
         refreshDailyReward()
+
+        // Another device saving while this one is open.
+        CloudSaveManager.shared.onRemoteSave = { [weak self] snapshot in
+            self?.restore(from: snapshot)
+        }
     }
 
     /// How often a comet can appear, and how long it sticks around once it does.
@@ -2015,6 +2028,9 @@ class GameViewModel: ObservableObject {
         }
         Feedback.purchase()
         saveGameState()
+        // Anything they paid for goes up immediately. Consumable gems are the
+        // one thing StoreKit can't restore, so losing them is losing money.
+        flushToCloud()
     }
 
     /// True until the player's first paid purchase lands.
@@ -2350,6 +2366,30 @@ class GameViewModel: ObservableObject {
         }
 
         persistence.save()
+        pushToCloudIfDue()
+    }
+
+    /// Mirrors the save to iCloud, at most once a minute.
+    ///
+    /// `saveGameState` runs after every merge, so pushing on each one would
+    /// hammer a store meant for occasional writes.
+    private func pushToCloudIfDue(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastCloudPush) > 60 else { return }
+        lastCloudPush = Date()
+        CloudSaveManager.shared.save(snapshot())
+    }
+
+    /// Pushes immediately, for moments worth not losing — backgrounding, and
+    /// anything the player paid for.
+    func flushToCloud() {
+        pushToCloudIfDue(force: true)
+    }
+
+    /// Adopts a cloud save if it's newer than what's on this device.
+    @discardableResult
+    func adoptCloudSaveIfNewer() -> Bool {
+        guard let snapshot = CloudSaveManager.shared.load() else { return false }
+        return restore(from: snapshot)
     }
 
     private func insertEntity(for item: CelestialItem, isPlaced: Bool, row: Int, col: Int, in context: NSManagedObjectContext) {
@@ -2370,6 +2410,106 @@ class GameViewModel: ObservableObject {
         entity.isPlaced = isPlaced
         entity.gridRow = Int16(row)
         entity.gridCol = Int16(col)
+    }
+
+    // MARK: Cloud save
+
+    /// Everything worth carrying to another device.
+    func snapshot() -> SaveSnapshot {
+        var items: [SaveSnapshot.Item] = boardItems.map {
+            SaveSnapshot.Item(chainID: $0.chainID, tier: $0.tier, row: nil, col: nil)
+        }
+        for entry in placedEntries {
+            items.append(SaveSnapshot.Item(chainID: entry.item.chainID,
+                                           tier: entry.item.tier,
+                                           row: entry.tile.row,
+                                           col: entry.tile.col))
+        }
+
+        return SaveSnapshot(
+            savedAt: Date(),
+            stardust: stardust,
+            starlightShards: starlightShards,
+            nebulaGems: nebulaGems,
+            galaxyMarks: galaxyMarks,
+            celestialRank: celestialRank,
+            permanentMultiplier: idleEngine.permanentMultiplier,
+            hasPrestiged: hasPrestiged,
+            totalMerges: totalMerges,
+            totalFusions: totalFusions,
+            itemsForged: itemsForged,
+            highestTierReached: highestTierReached,
+            claimedGoalIDs: Array(claimedGoalIDs),
+            upgradeLevels: upgradeLevels,
+            unlockedTiles: gridTiles.flatMap { $0 }.filter(\.isUnlocked).map { "\($0.row),\($0.col)" },
+            dailyStreak: dailyStreak,
+            lastDailyClaim: lastDailyClaim,
+            hasMadeFirstPurchase: hasMadeFirstPurchase,
+            ownedThemeIDs: Array(ownedThemeIDs),
+            selectedThemeID: selectedThemeID,
+            items: items)
+    }
+
+    /// Replaces local state with a snapshot from another device.
+    ///
+    /// Newest wins, and only strictly newer: a device being actively played
+    /// saves constantly, so it always holds the latest timestamp and can't be
+    /// overwritten by a stale one sitting in iCloud.
+    @discardableResult
+    func restore(from snapshot: SaveSnapshot, force: Bool = false) -> Bool {
+        let localTime = UserDefaults.standard.object(forKey: DefaultsKey.lastSaveDate) as? Date
+        if !force, let localTime, snapshot.savedAt <= localTime { return false }
+
+        stardust = snapshot.stardust
+        starlightShards = snapshot.starlightShards
+        nebulaGems = snapshot.nebulaGems
+        galaxyMarks = snapshot.galaxyMarks
+        celestialRank = max(1, snapshot.celestialRank)
+        idleEngine.permanentMultiplier = snapshot.permanentMultiplier
+        hasPrestiged = snapshot.hasPrestiged
+        totalMerges = snapshot.totalMerges
+        totalFusions = snapshot.totalFusions
+        itemsForged = snapshot.itemsForged
+        highestTierReached = snapshot.highestTierReached
+        claimedGoalIDs = Set(snapshot.claimedGoalIDs)
+        upgradeLevels = snapshot.upgradeLevels
+        dailyStreak = snapshot.dailyStreak
+        lastDailyClaim = snapshot.lastDailyClaim
+        hasMadeFirstPurchase = snapshot.hasMadeFirstPurchase
+        ownedThemeIDs = Set(snapshot.ownedThemeIDs).union([CosmeticCatalog.defaultID])
+        selectedThemeID = ownedThemeIDs.contains(snapshot.selectedThemeID)
+            ? snapshot.selectedThemeID : CosmeticCatalog.defaultID
+
+        let unlocked = Set(snapshot.unlockedTiles)
+        gridTiles = (0..<5).map { row in
+            (0..<5).map { col in
+                GridTile(row: row, col: col,
+                         isUnlocked: unlocked.contains("\(row),\(col)"),
+                         placedItem: nil)
+            }
+        }
+
+        boardItems = []
+        comet = nil
+        for stored in snapshot.items {
+            guard var item = ItemCatalog.makeItem(chainID: stored.chainID, tier: stored.tier)
+            else { continue }
+            if let row = stored.row, let col = stored.col,
+               gridTiles.indices.contains(row), gridTiles[row].indices.contains(col),
+               gridTiles[row][col].placedItem == nil {
+                item.position = (row, col)
+                gridTiles[row][col].placedItem = item
+            } else {
+                spawnOnBoard(item)
+            }
+        }
+
+        syncUpgradeEffects()
+        refreshDailyReward()
+        // Suppressed so writing the restored state doesn't push it straight
+        // back to iCloud and race the device it came from.
+        CloudSaveManager.shared.withRestoreSuppressed { saveGameState() }
+        return true
     }
 
     /// Restores saved state and returns whether any was found. When `false`,
@@ -2562,6 +2702,9 @@ struct ContentView: View {
                     streak: gameVM.dailyStreak,
                     claimedToday: gameVM.pendingDailyReward == nil)
                 gameVM.saveGameState()
+                // Backgrounding is the last reliable moment before the app can
+                // be killed, so this one bypasses the rate limit.
+                gameVM.flushToCloud()
             case .active:
                 NotificationManager.shared.clearBadge()
                 Task { await IAPManager.shared.refreshEntitlements() }
@@ -2790,6 +2933,7 @@ struct SettingsView: View {
     @ObservedObject private var audio = AudioManager.shared
     @ObservedObject private var gameCenter = GameCenterManager.shared
     @ObservedObject private var notifications = NotificationManager.shared
+    @ObservedObject private var cloud = CloudSaveManager.shared
     @StateObject private var iapManager = IAPManager.shared
     @State private var restoring = false
 
@@ -2865,6 +3009,35 @@ struct SettingsView: View {
                                     Text(gameCenter.isAuthenticated ? "Signed in" : "Not signed in")
                                         .font(.caption)
                                         .foregroundColor(gameCenter.isAuthenticated ? .green : .white.opacity(0.5))
+                                }
+
+                                Divider().background(Color.white.opacity(0.2))
+
+                                HStack {
+                                    Label("iCloud Save", systemImage: "icloud.fill")
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    if let error = cloud.lastError {
+                                        Text(error)
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                    } else if let synced = cloud.lastSyncedAt {
+                                        Text(synced, style: .relative)
+                                            .font(.caption)
+                                            .foregroundColor(.green)
+                                    } else {
+                                        Text("Not synced yet")
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.5))
+                                    }
+                                }
+
+                                Button {
+                                    gameVM.flushToCloud()
+                                } label: {
+                                    Label("Back Up Now", systemImage: "icloud.and.arrow.up")
+                                        .font(.caption)
+                                        .foregroundColor(.blue)
                                 }
                             }
                         }
@@ -4419,6 +4592,124 @@ struct ShopProductRow: View {
         .padding()
         .background(.ultraThinMaterial)
         .cornerRadius(15)
+    }
+}
+
+// MARK: - Cloud save
+/// The whole save, in one Codable value.
+///
+/// Consumable gem purchases are the reason this exists: StoreKit restores
+/// subscriptions and non-consumables on a new device, but gems bought and not
+/// yet spent live nowhere but the device that bought them.
+struct SaveSnapshot: Codable {
+    struct Item: Codable {
+        let chainID: String
+        let tier: Int
+        /// nil for items sitting in the overflow tray.
+        let row: Int?
+        let col: Int?
+    }
+
+    var savedAt: Date
+    var stardust: Double
+    var starlightShards: Int
+    var nebulaGems: Int
+    var galaxyMarks: Int
+    var celestialRank: Int
+    var permanentMultiplier: Double
+    var hasPrestiged: Bool
+    var totalMerges: Int
+    var totalFusions: Int
+    var itemsForged: Int
+    var highestTierReached: Int
+    var claimedGoalIDs: [String]
+    var upgradeLevels: [String: Int]
+    var unlockedTiles: [String]
+    var dailyStreak: Int
+    var lastDailyClaim: Date?
+    var hasMadeFirstPurchase: Bool
+    var ownedThemeIDs: [String]
+    var selectedThemeID: String
+    var items: [Item]
+}
+
+/// Mirrors the save into iCloud key-value storage.
+///
+/// Deliberately not CloudKit. `NSPersistentCloudKitContainer` is what crashed
+/// this app on launch every build; this is a different API with no schema, no
+/// container setup and no migration, and the save is a few kilobytes against a
+/// 1MB limit. If iCloud is unavailable it simply does nothing.
+final class CloudSaveManager: ObservableObject {
+    static let shared = CloudSaveManager()
+
+    private let store = NSUbiquitousKeyValueStore.default
+    private static let key = "nf.save.v1"
+
+    @Published private(set) var lastSyncedAt: Date?
+    @Published private(set) var lastError: String?
+
+    /// Set while a restore is being applied, so the resulting local saves don't
+    /// immediately push the same data back up.
+    private var isRestoring = false
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cloudChangedExternally(_:)),
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: store)
+        store.synchronize()
+    }
+
+    /// Called when another device writes a newer save.
+    var onRemoteSave: ((SaveSnapshot) -> Void)?
+
+    @objc private func cloudChangedExternally(_ note: Notification) {
+        guard let snapshot = load() else { return }
+        DispatchQueue.main.async {
+            self.onRemoteSave?(snapshot)
+        }
+    }
+
+    func save(_ snapshot: SaveSnapshot) {
+        guard !isRestoring else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(snapshot)
+            // Well under the 1MB per-key limit, but a corrupt oversized write
+            // would silently fail, so it's worth refusing loudly.
+            guard data.count < 900_000 else {
+                lastError = "Save too large to sync"
+                return
+            }
+            store.set(data, forKey: Self.key)
+            store.synchronize()
+            lastSyncedAt = Date()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func load() -> SaveSnapshot? {
+        guard let data = store.data(forKey: Self.key) else { return nil }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(SaveSnapshot.self, from: data)
+        } catch {
+            // A save written by a newer version we can't read is not a reason
+            // to lose the local one.
+            lastError = "Could not read cloud save"
+            return nil
+        }
+    }
+
+    func withRestoreSuppressed(_ body: () -> Void) {
+        isRestoring = true
+        body()
+        isRestoring = false
     }
 }
 

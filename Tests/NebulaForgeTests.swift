@@ -270,6 +270,108 @@ final class EconomyTests: XCTestCase {
     }
 }
 
+/// The cloud save is the path an unspent gem balance travels between devices,
+/// and StoreKit cannot restore consumables, so a serialisation bug here loses
+/// money that was actually paid.
+final class SaveSnapshotTests: XCTestCase {
+
+    private func sample() -> SaveSnapshot {
+        SaveSnapshot(
+            savedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            stardust: 12_345.678,
+            starlightShards: 42,
+            nebulaGems: 16_000,
+            galaxyMarks: 7,
+            celestialRank: 3,
+            permanentMultiplier: 2.5,
+            hasPrestiged: true,
+            totalMerges: 913,
+            totalFusions: 12,
+            itemsForged: 55,
+            highestTierReached: 6,
+            claimedGoalIDs: ["merge_1", "fusion_1"],
+            upgradeLevels: ["production": 4, "offline": 2],
+            unlockedTiles: ["0,0", "0,1", "1,0"],
+            dailyStreak: 5,
+            lastDailyClaim: Date(timeIntervalSince1970: 1_799_900_000),
+            hasMadeFirstPurchase: true,
+            ownedThemeIDs: ["deep_void", "crimson"],
+            selectedThemeID: "crimson",
+            items: [
+                .init(chainID: "fire_basic", tier: 3, row: 0, col: 0),
+                .init(chainID: "tempest_hybrid", tier: 4, row: 1, col: 0),
+                .init(chainID: "ice_basic", tier: 0, row: nil, col: nil),
+            ])
+    }
+
+    private func roundTrip(_ snapshot: SaveSnapshot) throws -> SaveSnapshot {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(SaveSnapshot.self, from: encoder.encode(snapshot))
+    }
+
+    func testCurrenciesSurviveARoundTrip() throws {
+        let original = sample()
+        let restored = try roundTrip(original)
+
+        XCTAssertEqual(restored.nebulaGems, original.nebulaGems)
+        XCTAssertEqual(restored.starlightShards, original.starlightShards)
+        XCTAssertEqual(restored.galaxyMarks, original.galaxyMarks)
+        XCTAssertEqual(restored.stardust, original.stardust, accuracy: 1e-6)
+        XCTAssertEqual(restored.hasMadeFirstPurchase, original.hasMadeFirstPurchase)
+    }
+
+    func testBoardAndProgressSurviveARoundTrip() throws {
+        let original = sample()
+        let restored = try roundTrip(original)
+
+        XCTAssertEqual(restored.items.count, original.items.count)
+        XCTAssertEqual(restored.unlockedTiles, original.unlockedTiles)
+        XCTAssertEqual(restored.upgradeLevels, original.upgradeLevels)
+        XCTAssertEqual(Set(restored.claimedGoalIDs), Set(original.claimedGoalIDs))
+        XCTAssertEqual(restored.permanentMultiplier, original.permanentMultiplier, accuracy: 1e-9)
+        XCTAssertEqual(restored.selectedThemeID, original.selectedThemeID)
+
+        // Tray items must stay in the tray, not silently acquire a position.
+        let tray = restored.items.filter { $0.row == nil }
+        XCTAssertEqual(tray.count, 1)
+        XCTAssertEqual(tray.first?.chainID, "ice_basic")
+    }
+
+    func testDatesSurviveARoundTrip() throws {
+        let original = sample()
+        let restored = try roundTrip(original)
+        XCTAssertEqual(restored.savedAt.timeIntervalSince1970,
+                       original.savedAt.timeIntervalSince1970, accuracy: 1)
+        XCTAssertEqual(restored.lastDailyClaim?.timeIntervalSince1970 ?? 0,
+                       original.lastDailyClaim?.timeIntervalSince1970 ?? 0, accuracy: 1)
+    }
+
+    func testEverySavedItemCanBeRebuilt() throws {
+        // A snapshot referencing a chain that no longer exists must not be able
+        // to resurrect it as something else.
+        for item in try roundTrip(sample()).items {
+            XCTAssertNotNil(ItemCatalog.makeItem(chainID: item.chainID, tier: item.tier),
+                            "\(item.chainID) tier \(item.tier) can't be rebuilt")
+        }
+    }
+
+    func testSaveIsSmallEnoughForKeyValueStorage() throws {
+        // iCloud key-value storage caps a single value at 1MB.
+        var big = sample()
+        big.items = (0..<25).map {
+            .init(chainID: "fire_basic", tier: 7, row: $0 / 5, col: $0 % 5)
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(big)
+        XCTAssertLessThan(data.count, 100_000,
+                          "a full board should be kilobytes, not near the 1MB cap")
+    }
+}
+
 /// Number formatting sits in front of unbounded idle values, where a naive
 /// conversion traps.
 final class FormattingTests: XCTestCase {

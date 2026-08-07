@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.developer.game-center</key>
 	<true/>
+	<!-- iCloud key-value storage only. Deliberately NOT the CloudKit container
+	     entitlements: NSPersistentCloudKitContainer hard-crashed this app on
+	     launch and the cause was never found. The signing profile already
+	     permits 862WW535F7.*, so this needs no profile regeneration. -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
 </dict>
 </plist>
