@@ -1,0 +1,4 @@
+# Working files from pack_pipeline.py runs.
+*_raw/
+*_urls.json
+*_jobs.json
