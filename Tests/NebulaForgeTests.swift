@@ -399,7 +399,11 @@ final class EconomyTests: XCTestCase {
     func testEverySkinHasArtForEveryReachableTier() {
         // A missing asset renders as a blank tile, which looks like a bug and
         // would be worst on the skin someone paid for.
-        for skin in SkinCatalog.all {
+        // Only the skins actually offered for sale. The catalog also holds
+        // packs whose art hasn't shipped, and those are filtered out of the
+        // shop rather than rendered blank.
+        XCTAssertFalse(SkinCatalog.available.isEmpty)
+        for skin in SkinCatalog.available {
             for chain in ItemCatalog.chains {
                 let lowest = chain.isHybrid ? FusionCatalog.minTier : 0
                 for tier in lowest..<chain.tierNames.count {
@@ -409,6 +413,69 @@ final class EconomyTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testEveryPaidSkinIsATradeoffNotJustPower() {
+        // Straight upgrades would make owning the set optimal, stack into
+        // nonsense, and turn the leaderboard into a spending ranking.
+        for skin in SkinCatalog.all where skin.gemCost > 0 {
+            let e = skin.effect
+            let upsides = [e.production > 1, e.shards > 1, e.fusionShards > 1,
+                           e.cometInterval < 1, e.cometValue > 1,
+                           e.offlineHours > 0, e.forgeCost < 1]
+                + Element.allCases.map { (e.elementBonus[$0] ?? 1) > 1 }
+            let downsides = [e.production < 1, e.shards < 1, e.fusionShards < 1,
+                             e.cometInterval > 1, e.cometValue < 1, e.forgeCost > 1]
+                + Element.allCases.map { (e.elementBonus[$0] ?? 1) < 1 }
+
+            XCTAssertTrue(upsides.contains(true), "\(skin.name) gives nothing")
+            XCTAssertTrue(downsides.contains(true),
+                          "\(skin.name) is a pure upgrade with no cost")
+        }
+    }
+
+    func testFreeCosmeticsCarryNoEffect() {
+        XCTAssertEqual(SkinCatalog.skin(for: SkinCatalog.defaultID).effect, .none)
+        XCTAssertEqual(CosmeticCatalog.theme(for: CosmeticCatalog.defaultID).effect, .none)
+    }
+
+    func testEveryPaidCosmeticActuallyDoesSomething() {
+        // A cosmetic advertised as having an effect must have one, or the shop
+        // is lying about what the price buys.
+        for skin in SkinCatalog.all where skin.gemCost > 0 {
+            XCTAssertTrue(skin.effect.isMeaningful, "\(skin.name) has no effect")
+            XCTAssertFalse(skin.effect.summary.isEmpty, "\(skin.name) shows no tags")
+        }
+        for theme in CosmeticCatalog.all where theme.gemCost > 0 {
+            XCTAssertTrue(theme.effect.isMeaningful, "\(theme.name) has no effect")
+        }
+    }
+
+    func testEffectsCombineMultiplicativelyAndAddOfflineHours() {
+        let a = CosmeticEffect(production: 1.2, shards: 0.9, offlineHours: 3,
+                               elementBonus: [.fire: 1.4])
+        let b = CosmeticEffect(production: 0.95, shards: 1.3, offlineHours: 8,
+                               elementBonus: [.fire: 1.1, .ice: 0.85])
+        let c = CosmeticEffect.combine(a, b)
+
+        XCTAssertEqual(c.production, 1.2 * 0.95, accuracy: 1e-9)
+        XCTAssertEqual(c.shards, 0.9 * 1.3, accuracy: 1e-9)
+        XCTAssertEqual(c.offlineHours, 11, accuracy: 1e-9)
+        XCTAssertEqual(c.elementBonus[.fire] ?? 0, 1.4 * 1.1, accuracy: 1e-9)
+        XCTAssertEqual(c.elementBonus[.ice] ?? 0, 0.85, accuracy: 1e-9)
+    }
+
+    func testCombiningWithNothingChangesNothing() {
+        let a = CosmeticEffect(production: 1.25, cometInterval: 0.6)
+        XCTAssertEqual(CosmeticEffect.combine(a, .none), a)
+        XCTAssertEqual(CosmeticEffect.combine(.none, .none), .none)
+    }
+
+    func testEffectSummaryNamesBothDirections() {
+        let e = CosmeticEffect(production: 0.95, shards: 1.30)
+        let tags = e.summary.joined(separator: " ")
+        XCTAssertTrue(tags.contains("-5%"), "penalty must be shown: \(tags)")
+        XCTAssertTrue(tags.contains("+30%"), "bonus must be shown: \(tags)")
     }
 
     func testSkinsAreUniqueAndOneIsFree() {

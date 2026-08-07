@@ -541,6 +541,81 @@ enum GemShopCatalog {
     ]
 }
 
+// MARK: - Cosmetic effects
+/// A passive granted by an equipped theme or skin.
+///
+/// Every one is a tradeoff rather than straight power. If cosmetics were pure
+/// multipliers the optimal play would be "own everything", the bonuses would
+/// stack into nonsense, and the leaderboard would rank spending rather than
+/// skill. Because only one theme and one skin can be equipped at a time, the
+/// most anyone carries is two effects — and each costs something.
+struct CosmeticEffect: Equatable {
+    /// Multiplies total Stardust output.
+    var production: Double = 1
+    /// Multiplies Starlight Shards from merges.
+    var shards: Double = 1
+    /// Multiplies fusion shard payouts, on top of `shards`.
+    var fusionShards: Double = 1
+    /// Scales the gap between comets. Below 1 means more often.
+    var cometInterval: Double = 1
+    /// Multiplies what a caught comet pays.
+    var cometValue: Double = 1
+    /// Extra offline hours.
+    var offlineHours: Double = 0
+    /// Scales the Stardust price of forging. Below 1 is cheaper.
+    var forgeCost: Double = 1
+    /// A per-element output multiplier, for the specialist sets.
+    var elementBonus: [Element: Double] = [:]
+
+    static let none = CosmeticEffect()
+
+    var isMeaningful: Bool { self != .none }
+
+    /// Human-readable, in the order a player cares about.
+    var summary: [String] {
+        var parts: [String] = []
+        func pct(_ value: Double) -> String {
+            let delta = Int(((value - 1) * 100).rounded())
+            return "\(delta > 0 ? "+" : "")\(delta)%"
+        }
+
+        for element in Element.allCases {
+            if let bonus = elementBonus[element], bonus != 1 {
+                parts.append("\(pct(bonus)) \(element.displayName)")
+            }
+        }
+        if production != 1 { parts.append("\(pct(production)) production") }
+        if shards != 1 { parts.append("\(pct(shards)) Shards") }
+        if fusionShards != 1 { parts.append("\(pct(fusionShards)) fusion Shards") }
+        if cometInterval != 1 {
+            let more = Int(((1 / cometInterval - 1) * 100).rounded())
+            parts.append("\(more > 0 ? "+" : "")\(more)% comet rate")
+        }
+        if cometValue != 1 { parts.append("\(pct(cometValue)) comet value") }
+        if forgeCost != 1 { parts.append("\(pct(forgeCost)) forge cost") }
+        if offlineHours != 0 { parts.append("+\(Int(offlineHours))h offline") }
+        return parts
+    }
+
+    /// Combines a theme and a skin. Multiplicative, and capped at two sources
+    /// by the one-equipped-each rule.
+    static func combine(_ a: CosmeticEffect, _ b: CosmeticEffect) -> CosmeticEffect {
+        var out = CosmeticEffect()
+        out.production = a.production * b.production
+        out.shards = a.shards * b.shards
+        out.fusionShards = a.fusionShards * b.fusionShards
+        out.cometInterval = a.cometInterval * b.cometInterval
+        out.cometValue = a.cometValue * b.cometValue
+        out.offlineHours = a.offlineHours + b.offlineHours
+        out.forgeCost = a.forgeCost * b.forgeCost
+        for element in Element.allCases {
+            let combined = (a.elementBonus[element] ?? 1) * (b.elementBonus[element] ?? 1)
+            if combined != 1 { out.elementBonus[element] = combined }
+        }
+        return out
+    }
+}
+
 // MARK: - Player profile
 /// Identity, stored entirely on this device.
 ///
@@ -753,15 +828,83 @@ enum SkinCatalog {
 
     static let all: [SpriteSkin] = [
         SpriteSkin(id: "classic", name: "Classic",
-                   detail: "The original painted set.",
+                   detail: "The original painted set. No bonus, no penalty.",
                    prefix: "item", gemCost: 0),
+
         SpriteSkin(id: "anime", name: "Anime Ink",
-                   detail: "All 52 items redrawn cel-shaded, with hard ink outlines.",
-                   prefix: "anime", gemCost: 1500),
+                   detail: "Cel-shaded with hard ink outlines. Merges pay far more, output runs a little lean.",
+                   prefix: "anime", gemCost: 1500,
+                   effect: CosmeticEffect(production: 0.95, shards: 1.30)),
+
+        SpriteSkin(id: "cyber", name: "Cyberpunk",
+                   detail: "Neon and chrome. Comets arrive constantly, but each one carries less.",
+                   prefix: "cyber", gemCost: 1500,
+                   effect: CosmeticEffect(cometInterval: 0.6, cometValue: 0.85)),
+
+        SpriteSkin(id: "medieval", name: "Medieval",
+                   detail: "Hammered iron and gold leaf. Your galaxy keeps working far longer while you're away.",
+                   prefix: "medieval", gemCost: 1500,
+                   effect: CosmeticEffect(production: 0.92, offlineHours: 8)),
+
+        SpriteSkin(id: "fantasy", name: "High Fantasy",
+                   detail: "Storybook enamel. Fusions pay double, ordinary merges a little less.",
+                   prefix: "fantasy", gemCost: 1800,
+                   effect: CosmeticEffect(shards: 0.9, fusionShards: 2.0)),
+
+        SpriteSkin(id: "dragon", name: "Dragonscale",
+                   detail: "Scaled and molten. Fire burns far hotter; Ice suffers for it.",
+                   prefix: "dragon", gemCost: 1800,
+                   effect: CosmeticEffect(elementBonus: [.fire: 1.40, .ice: 0.85])),
+
+        SpriteSkin(id: "frost", name: "Frostbound",
+                   detail: "Carved glacier. Ice dominates; Fire gutters.",
+                   prefix: "frost", gemCost: 1800,
+                   effect: CosmeticEffect(elementBonus: [.ice: 1.40, .fire: 0.85])),
+
+        SpriteSkin(id: "eldritch", name: "Eldritch",
+                   detail: "Wrong angles and too many eyes. Void devours; Radiant dims.",
+                   prefix: "eldritch", gemCost: 1800,
+                   effect: CosmeticEffect(elementBonus: [.void: 1.40, .radiant: 0.85])),
+
+        SpriteSkin(id: "celestial", name: "Celestial",
+                   detail: "Stained glass and gold. Radiant blazes; Void recedes.",
+                   prefix: "celestial", gemCost: 1800,
+                   effect: CosmeticEffect(elementBonus: [.radiant: 1.40, .void: 0.85])),
+
+        SpriteSkin(id: "clockwork", name: "Clockwork",
+                   detail: "Brass gears and escapements. Forging gets much cheaper, merges pay less.",
+                   prefix: "clockwork", gemCost: 2000,
+                   effect: CosmeticEffect(shards: 0.85, forgeCost: 0.7)),
+
+        SpriteSkin(id: "biolume", name: "Bioluminescent",
+                   detail: "Deep-sea glow. Raw output climbs, but nothing else improves.",
+                   prefix: "biolume", gemCost: 2000,
+                   effect: CosmeticEffect(production: 1.25, cometValue: 0.9)),
+
+        SpriteSkin(id: "vapor", name: "Vaporwave",
+                   detail: "Pink grids and dead malls. Shards pour in; production idles.",
+                   prefix: "vapor", gemCost: 2000,
+                   effect: CosmeticEffect(production: 0.88, shards: 1.45)),
     ]
 
     static func skin(for id: String) -> SpriteSkin {
         all.first { $0.id == id } ?? all[0]
+    }
+
+    /// Skins whose artwork is actually in the bundle.
+    ///
+    /// The catalog defines the whole roadmap, but a set whose sprites haven't
+    /// shipped yet would render as blank tiles — worse than not offering it.
+    /// Checking one representative sprite is enough: the packs are produced and
+    /// committed as complete sets, never piecemeal.
+    static var available: [SpriteSkin] {
+        all.filter { skin in
+            UIImage(named: "\(skin.prefix)_fire_t0") != nil
+        }
+    }
+
+    static func isAvailable(_ skin: SpriteSkin) -> Bool {
+        UIImage(named: "\(skin.prefix)_fire_t0") != nil
     }
 }
 
@@ -870,7 +1013,8 @@ enum CosmeticCatalog {
                          Color(red: 0.05, green: 0.02, blue: 0.30)],
             tileFill: [Color.blue.opacity(0.15), Color.purple.opacity(0.10)],
             accent: .purple, starTint: .white,
-            nebula: [Color.purple.opacity(0.18), Color.blue.opacity(0.14)]),
+            nebula: [Color.purple.opacity(0.18), Color.blue.opacity(0.14)],
+            effect: CosmeticEffect(elementBonus: [.ice: 1.12])),
 
         CosmeticTheme(
             id: "crimson", name: "Crimson Nebula",
@@ -879,7 +1023,8 @@ enum CosmeticCatalog {
                          Color(red: 0.30, green: 0.04, blue: 0.12)],
             tileFill: [Color.red.opacity(0.16), Color.orange.opacity(0.10)],
             accent: .orange, starTint: Color(red: 1.0, green: 0.88, blue: 0.80),
-            nebula: [Color.red.opacity(0.22), Color.orange.opacity(0.16)]),
+            nebula: [Color.red.opacity(0.22), Color.orange.opacity(0.16)],
+            effect: CosmeticEffect(elementBonus: [.fire: 1.12])),
 
         CosmeticTheme(
             id: "aurora", name: "Aurora Drift",
@@ -888,7 +1033,8 @@ enum CosmeticCatalog {
                          Color(red: 0.03, green: 0.26, blue: 0.24)],
             tileFill: [Color.teal.opacity(0.18), Color.green.opacity(0.10)],
             accent: .teal, starTint: Color(red: 0.85, green: 1.0, blue: 0.95),
-            nebula: [Color.green.opacity(0.20), Color.teal.opacity(0.18)]),
+            nebula: [Color.green.opacity(0.20), Color.teal.opacity(0.18)],
+            effect: CosmeticEffect(forgeCost: 0.9)),
 
         CosmeticTheme(
             id: "gilded", name: "Golden Expanse",
@@ -897,7 +1043,8 @@ enum CosmeticCatalog {
                          Color(red: 0.28, green: 0.20, blue: 0.03)],
             tileFill: [Color.yellow.opacity(0.16), Color.orange.opacity(0.10)],
             accent: .yellow, starTint: Color(red: 1.0, green: 0.97, blue: 0.82),
-            nebula: [Color.yellow.opacity(0.20), Color.orange.opacity(0.14)]),
+            nebula: [Color.yellow.opacity(0.20), Color.orange.opacity(0.14)],
+            effect: CosmeticEffect(shards: 1.12)),
 
         CosmeticTheme(
             id: "verdant", name: "Verdant Reach",
@@ -906,7 +1053,8 @@ enum CosmeticCatalog {
                          Color(red: 0.06, green: 0.22, blue: 0.09)],
             tileFill: [Color.green.opacity(0.18), Color.mint.opacity(0.10)],
             accent: .mint, starTint: Color(red: 0.90, green: 1.0, blue: 0.88),
-            nebula: [Color.green.opacity(0.22), Color.yellow.opacity(0.10)]),
+            nebula: [Color.green.opacity(0.22), Color.yellow.opacity(0.10)],
+            effect: CosmeticEffect(offlineHours: 3)),
 
         CosmeticTheme(
             id: "abyss", name: "The Abyss",
@@ -915,7 +1063,8 @@ enum CosmeticCatalog {
                          Color(red: 0.02, green: 0.05, blue: 0.11)],
             tileFill: [Color.cyan.opacity(0.10), Color.blue.opacity(0.06)],
             accent: .cyan, starTint: Color(red: 0.75, green: 0.92, blue: 1.0),
-            nebula: [Color.cyan.opacity(0.10), Color.blue.opacity(0.08)]),
+            nebula: [Color.cyan.opacity(0.10), Color.blue.opacity(0.08)],
+            effect: CosmeticEffect(elementBonus: [.void: 1.12])),
 
         CosmeticTheme(
             id: "ember", name: "Emberfall",
@@ -924,7 +1073,8 @@ enum CosmeticCatalog {
                          Color(red: 0.26, green: 0.11, blue: 0.03)],
             tileFill: [Color.orange.opacity(0.20), Color.red.opacity(0.10)],
             accent: .orange, starTint: Color(red: 1.0, green: 0.85, blue: 0.65),
-            nebula: [Color.orange.opacity(0.26), Color.red.opacity(0.14)]),
+            nebula: [Color.orange.opacity(0.26), Color.red.opacity(0.14)],
+            effect: CosmeticEffect(elementBonus: [.fire: 1.05, .ice: 1.05, .void: 1.05, .radiant: 1.05])),
 
         CosmeticTheme(
             id: "rose", name: "Rose Quartz",
@@ -933,7 +1083,8 @@ enum CosmeticCatalog {
                          Color(red: 0.32, green: 0.10, blue: 0.27)],
             tileFill: [Color.pink.opacity(0.18), Color.purple.opacity(0.10)],
             accent: .pink, starTint: Color(red: 1.0, green: 0.92, blue: 0.96),
-            nebula: [Color.pink.opacity(0.24), Color.purple.opacity(0.16)]),
+            nebula: [Color.pink.opacity(0.24), Color.purple.opacity(0.16)],
+            effect: CosmeticEffect(elementBonus: [.radiant: 1.12])),
 
         CosmeticTheme(
             id: "monochrome", name: "Silver Silence",
@@ -942,7 +1093,8 @@ enum CosmeticCatalog {
                          Color(red: 0.16, green: 0.17, blue: 0.19)],
             tileFill: [Color.white.opacity(0.12), Color.gray.opacity(0.10)],
             accent: .white, starTint: .white,
-            nebula: [Color.white.opacity(0.10), Color.gray.opacity(0.12)]),
+            nebula: [Color.white.opacity(0.10), Color.gray.opacity(0.12)],
+            effect: CosmeticEffect(production: 1.10, shards: 0.94)),
 
         CosmeticTheme(
             id: "prism", name: "Prism Field",
@@ -961,7 +1113,8 @@ enum CosmeticCatalog {
                          Color(red: 0.38, green: 0.24, blue: 0.02)],
             tileFill: [Color.yellow.opacity(0.22), Color.red.opacity(0.10)],
             accent: .yellow, starTint: Color(red: 1.0, green: 0.95, blue: 0.75),
-            nebula: [Color.yellow.opacity(0.30), Color.orange.opacity(0.22)]),
+            nebula: [Color.yellow.opacity(0.30), Color.orange.opacity(0.22)],
+            effect: CosmeticEffect(cometInterval: 0.75)),
 
         CosmeticTheme(
             id: "singularity", name: "Singularity",
@@ -970,7 +1123,8 @@ enum CosmeticCatalog {
                          Color(red: 0.08, green: 0.02, blue: 0.14)],
             tileFill: [Color.purple.opacity(0.22), Color.black.opacity(0.30)],
             accent: Color(red: 0.75, green: 0.45, blue: 1.0), starTint: .white,
-            nebula: [Color.purple.opacity(0.30), Color.indigo.opacity(0.24)]),
+            nebula: [Color.purple.opacity(0.30), Color.indigo.opacity(0.24)],
+            effect: CosmeticEffect(production: 1.18, forgeCost: 1.12)),
     ]
 
     static let defaultID = "deep_void"
@@ -2090,6 +2244,22 @@ class GameViewModel: ObservableObject {
         saveGameState()
     }
 
+    /// The passives currently in force: one equipped theme plus one equipped
+    /// skin, and nothing else.
+    ///
+    /// Owning a cosmetic grants nothing — only wearing it does. Otherwise
+    /// buying the set would stack every bonus at once, which is both broken
+    /// balance and a reason never to buy a second one.
+    ///
+    /// A theme being *previewed* is deliberately excluded: the try-on shows how
+    /// it looks, not how it plays, or a free two-minute buff would be
+    /// repeatable forever.
+    var activeEffect: CosmeticEffect {
+        CosmeticEffect.combine(
+            CosmeticCatalog.theme(for: selectedThemeID).effect,
+            SkinCatalog.skin(for: selectedSkinID).effect)
+    }
+
     func owns(_ skin: SpriteSkin) -> Bool {
         skin.gemCost == 0 || ownedSkinIDs.contains(skin.id)
     }
@@ -2101,6 +2271,8 @@ class GameViewModel: ObservableObject {
         ownedSkinIDs.insert(skin.id)
         selectedSkinID = skin.id
         Feedback.purchase()
+        // Effects come from what's worn, so wearing it has to take effect now.
+        syncUpgradeEffects()
         saveGameState()
         return true
     }
@@ -2110,6 +2282,8 @@ class GameViewModel: ObservableObject {
         guard owns(skin) else { return false }
         selectedSkinID = skin.id
         Feedback.place()
+        // Effects come from what's worn, so wearing it has to take effect now.
+        syncUpgradeEffects()
         saveGameState()
         return true
     }
@@ -2203,7 +2377,7 @@ class GameViewModel: ObservableObject {
     /// but gently enough that production keeps up. At the old 1.18 the price
     /// doubled every four forges and outran output within one session.
     var forgeItemCost: Double {
-        25 * pow(1.12, Double(itemsForged)) * forgeCostFactor
+        25 * pow(1.12, Double(itemsForged)) * forgeCostFactor * activeEffect.forgeCost
     }
 
     /// Minimum built-up power before a Supernova is allowed.
@@ -2340,13 +2514,14 @@ class GameViewModel: ObservableObject {
             return
         }
 
-        guard Date().timeIntervalSince(lastCometSpawn) >= Self.cometInterval,
+        let interval = Self.cometInterval * activeEffect.cometInterval
+        guard Date().timeIntervalSince(lastCometSpawn) >= interval,
               let tile = freeUnlockedTiles.randomElement() else { return }
 
         lastCometSpawn = Date()
         // Worth about ninety seconds of current output, with a floor so it
         // still means something in the first few minutes of a run.
-        let payout = max(25, idleEngine.totalProductionPerSec * 90)
+        let payout = max(25, idleEngine.totalProductionPerSec * 90) * activeEffect.cometValue
         comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
                       lifetime: Self.cometLifetime, stardust: payout, shards: 3)
         Feedback.place()
@@ -2490,8 +2665,13 @@ class GameViewModel: ObservableObject {
     /// Shards; higher tiers pay more and fusions pay a premium on top, since
     /// they cost you a tier-up to set up.
     private func awardMerge(_ merged: CelestialItem, isFusion: Bool) {
+        let cosmetics = activeEffect
         let fusionBonus = isFusion ? 3 : 1
-        let shardsGained = max(1, merged.tier * 2) * shardYieldMultiplier * fusionBonus
+        let base = Double(max(1, merged.tier * 2) * shardYieldMultiplier * fusionBonus)
+        // Fusion sets multiply fusions specifically, on top of the general
+        // shard bonus — which is what makes High Fantasy a fusion build.
+        let scaled = base * cosmetics.shards * (isFusion ? cosmetics.fusionShards : 1)
+        let shardsGained = max(1, Int(scaled.rounded()))
         starlightShards += shardsGained
         totalMerges += 1
         todayMerges += 1
@@ -2614,6 +2794,7 @@ class GameViewModel: ObservableObject {
 
     var offlineCapHours: Double {
         baseOfflineHours + 2 * Double(upgradeLevel("offline")) + purchaseOfflineHours
+            + activeEffect.offlineHours
     }
 
     @discardableResult
@@ -2648,8 +2829,11 @@ class GameViewModel: ObservableObject {
     /// output. Must run after any change to `upgradeLevels`, purchases, or the
     /// surge — including on load.
     func syncUpgradeEffects() {
+        let cosmetics = activeEffect
         idleEngine.upgradeMultiplier =
             upgradeProductionMultiplier * purchaseMultiplier * surgeMultiplier
+            * cosmetics.production
+        idleEngine.elementBonus = cosmetics.elementBonus
         idleEngine.recalculate(from: gridTiles)
     }
 
@@ -2730,7 +2914,7 @@ class GameViewModel: ObservableObject {
             guard unlockFirstLockedTile() else { return false }
         case "call_comet":
             guard comet == nil, let tile = freeUnlockedTiles.randomElement() else { return false }
-            let payout = max(25, idleEngine.totalProductionPerSec * 90)
+            let payout = max(25, idleEngine.totalProductionPerSec * 90) * activeEffect.cometValue
             comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
                           lifetime: Self.cometLifetime, stardust: payout, shards: 3)
         case "surge":
@@ -2802,6 +2986,8 @@ class GameViewModel: ObservableObject {
         // for, and expire out from under them.
         endPreview()
         Feedback.purchase()
+        // Effects come from what's worn, so wearing it has to take effect now.
+        syncUpgradeEffects()
         saveGameState()
         return true
     }
@@ -2811,6 +2997,8 @@ class GameViewModel: ObservableObject {
         guard owns(theme) else { return false }
         selectedThemeID = theme.id
         Feedback.place()
+        // Effects come from what's worn, so wearing it has to take effect now.
+        syncUpgradeEffects()
         saveGameState()
         return true
     }
@@ -5528,7 +5716,7 @@ struct ShopView: View {
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            ForEach(SkinCatalog.all) { skin in
+            ForEach(SkinCatalog.available) { skin in
                 SkinRow(skin: skin, onNeedGems: { shelf = .gems })
             }
 
@@ -5671,6 +5859,31 @@ struct ThemePreview: View {
     }
 }
 
+/// The bonuses and penalties a cosmetic carries, colour-coded.
+///
+/// Penalties are shown as prominently as bonuses on purpose — these are
+/// tradeoffs, and hiding the cost would make them feel like a bait and switch
+/// the first time someone noticed their output drop.
+struct EffectTags: View {
+    let effect: CosmeticEffect
+
+    var body: some View {
+        if effect.isMeaningful {
+            HStack(spacing: 6) {
+                ForEach(effect.summary, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption2.bold())
+                        .foregroundColor(tag.contains("-") ? .red.opacity(0.9) : .green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.black.opacity(0.25)))
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+}
+
 struct SkinRow: View {
     @EnvironmentObject var gameVM: GameViewModel
     let skin: SpriteSkin
@@ -5696,6 +5909,7 @@ struct SkinRow: View {
                     Text(skin.detail)
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.7))
+                    EffectTags(effect: skin.effect)
                 }
                 Spacer()
                 if selected {
@@ -5779,6 +5993,7 @@ struct ThemeRow: View {
                 Text(theme.detail)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.7))
+                EffectTags(effect: theme.effect)
             }
 
             Spacer()
