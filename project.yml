@@ -26,11 +26,11 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         LSApplicationCategoryType: public.app-category.games
         ITSAppUsesNonExemptEncryption: false
+        # Portrait only. The board, resource bar and tab layout are all designed
+        # for a portrait phone; landscape reflowed into something broken and
+        # App Review does rotate the device.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UILaunchScreen: {}
@@ -42,7 +42,10 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPhone only (1). Shipping as universal meant Review tested on iPad and
+        # the listing needed a second set of screenshots for a layout nobody
+        # designed. Add iPad back deliberately, with a layout built for it.
+        TARGETED_DEVICE_FAMILY: "1"
         DEVELOPMENT_TEAM: "862WW535F7"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:

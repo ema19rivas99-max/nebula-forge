@@ -300,20 +300,67 @@ struct StoreGrant {
     /// Applied to production for as long as the entitlement is valid.
     let productionMultiplier: Double
     let kind: Kind
+    /// Higher tiers of the same subscription group outrank lower ones. Only the
+    /// best active tier applies, so upgrading never stacks by accident.
+    let tier: Int
+    /// Extra offline hours granted while the entitlement is active.
+    let offlineHours: Double
+    /// Themes unlocked for free by owning this.
+    let themeIDs: [String]
+
+    init(gems: Int, shards: Int, productionMultiplier: Double, kind: Kind,
+         tier: Int = 0, offlineHours: Double = 0, themeIDs: [String] = []) {
+        self.gems = gems
+        self.shards = shards
+        self.productionMultiplier = productionMultiplier
+        self.kind = kind
+        self.tier = tier
+        self.offlineHours = offlineHours
+        self.themeIDs = themeIDs
+    }
 }
 
 enum StoreCatalog {
+    /// Gem packs climb in value per dollar — the standard ladder, so the large
+    /// tiers are visibly the better deal rather than just bigger.
     static let grants: [String: StoreGrant] = [
+        // Consumable gem ladder: $0.99 -> $99.99
+        "nebulaforge.gems.handful": StoreGrant(
+            gems: 80, shards: 0, productionMultiplier: 1.0, kind: .consumable),
         "nebulaforge.pileofgems": StoreGrant(
             gems: 500, shards: 0, productionMultiplier: 1.0, kind: .consumable),
+        "nebulaforge.gems.crate": StoreGrant(
+            gems: 1_200, shards: 200, productionMultiplier: 1.0, kind: .consumable),
+        "nebulaforge.gems.vault": StoreGrant(
+            gems: 2_800, shards: 600, productionMultiplier: 1.0, kind: .consumable),
+        "nebulaforge.gems.hoard": StoreGrant(
+            gems: 7_500, shards: 2_000, productionMultiplier: 1.0, kind: .consumable),
+        "nebulaforge.gems.galaxy": StoreGrant(
+            gems: 16_000, shards: 5_000, productionMultiplier: 1.0, kind: .consumable),
+
+        // One-time bundles.
         "nebulaforge.starterpack": StoreGrant(
-            gems: 200, shards: 100, productionMultiplier: 1.25, kind: .nonConsumable),
+            gems: 200, shards: 100, productionMultiplier: 1.25, kind: .nonConsumable,
+            themeIDs: ["crimson"]),
         "nebulaforge.architectkit": StoreGrant(
-            gems: 400, shards: 250, productionMultiplier: 1.5, kind: .nonConsumable),
-        "nebulaforge.nebulapass.monthly": StoreGrant(
-            gems: 300, shards: 0, productionMultiplier: 2.0, kind: .subscription),
+            gems: 400, shards: 250, productionMultiplier: 1.5, kind: .nonConsumable,
+            offlineHours: 4, themeIDs: ["aurora"]),
+
+        // Subscriptions. Tier decides which one wins when more than one is
+        // somehow active; only the highest applies.
         "nebulaforge.gemsubscription.weekly": StoreGrant(
-            gems: 150, shards: 0, productionMultiplier: 1.0, kind: .subscription)
+            gems: 150, shards: 0, productionMultiplier: 1.0, kind: .subscription,
+            tier: 1),
+        "nebulaforge.nebulapass.monthly": StoreGrant(
+            gems: 300, shards: 150, productionMultiplier: 2.0, kind: .subscription,
+            tier: 2, offlineHours: 8, themeIDs: ["gilded"]),
+        "nebulaforge.nebulapass.plus.monthly": StoreGrant(
+            gems: 900, shards: 500, productionMultiplier: 3.5, kind: .subscription,
+            tier: 3, offlineHours: 16, themeIDs: ["gilded", "verdant", "abyss"]),
+        "nebulaforge.nebulapass.architect.monthly": StoreGrant(
+            gems: 2_500, shards: 1_500, productionMultiplier: 6.0, kind: .subscription,
+            tier: 4, offlineHours: 24,
+            themeIDs: ["gilded", "verdant", "abyss", "ember", "monochrome", "prism"]),
     ]
 
     static func grant(for productID: String) -> StoreGrant? { grants[productID] }
@@ -325,7 +372,13 @@ enum StoreCatalog {
         if grant.gems > 0 { parts.append("\(grant.gems) Gems") }
         if grant.shards > 0 { parts.append("\(grant.shards) Shards") }
         if grant.productionMultiplier > 1 {
-            parts.append(String(format: "×%.2g production", grant.productionMultiplier))
+            parts.append(String(format: "%.3gx production", grant.productionMultiplier))
+        }
+        if grant.offlineHours > 0 {
+            parts.append("+\(Int(grant.offlineHours))h offline")
+        }
+        if !grant.themeIDs.isEmpty {
+            parts.append("\(grant.themeIDs.count) theme\(grant.themeIDs.count == 1 ? "" : "s")")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -345,24 +398,39 @@ struct GemOffer: Identifiable {
 
 enum GemShopCatalog {
     static let all: [GemOffer] = [
+        GemOffer(id: "call_comet", title: "Call a Comet",
+                 detail: "Summon a comet immediately, wherever there's room.",
+                 icon: "sparkles", gemCost: 15),
         GemOffer(id: "forge_bundle", title: "Forge Bundle",
                  detail: "Five items dropped straight onto the board, free of Stardust.",
                  icon: "hammer.fill", gemCost: 25),
         GemOffer(id: "unlock_tile", title: "Expand the Grid",
                  detail: "Unlock the next tile without spending Shards.",
                  icon: "lock.open.fill", gemCost: 40),
-        GemOffer(id: "call_comet", title: "Call a Comet",
-                 detail: "Summon a comet immediately, wherever there's room.",
-                 icon: "sparkles", gemCost: 15),
         GemOffer(id: "surge", title: "Stellar Surge",
                  detail: "Double production for thirty minutes.",
-                 icon: "bolt.fill", gemCost: 60)
+                 icon: "bolt.fill", gemCost: 60),
+        GemOffer(id: "shard_cache", title: "Shard Cache",
+                 detail: "250 Starlight Shards, straight into your pocket.",
+                 icon: "sparkle", gemCost: 80),
+        GemOffer(id: "forge_reset", title: "Recalibrate the Forge",
+                 detail: "Reset the Stardust price of forging back to its floor.",
+                 icon: "arrow.counterclockwise", gemCost: 120),
+        GemOffer(id: "surge_long", title: "Prolonged Surge",
+                 detail: "Double production for four hours.",
+                 icon: "bolt.badge.clock.fill", gemCost: 200),
+        GemOffer(id: "tier_jump", title: "Forced Fusion",
+                 detail: "Upgrade your strongest board item one full tier.",
+                 icon: "arrow.up.circle.fill", gemCost: 350),
+        GemOffer(id: "open_board", title: "Open the Galaxy",
+                 detail: "Unlock every remaining tile at once.",
+                 icon: "square.grid.3x3.fill", gemCost: 600),
     ]
 }
 
 // MARK: - Cosmetics
-/// Board themes. Deliberately palette-only — they change how the galaxy reads
-/// without needing any new artwork, so they can ship today.
+/// Board themes. Palette-only by design — they restyle the whole galaxy without
+/// shipping a single image, so the list can grow freely.
 struct CosmeticTheme: Identifiable {
     let id: String
     let name: String
@@ -372,6 +440,23 @@ struct CosmeticTheme: Identifiable {
     let tileFill: [Color]
     let accent: Color
     let starTint: Color
+    /// Soft coloured clouds drawn behind the starfield. This is what stops the
+    /// themes reading as "the same screen, slightly different blue".
+    let nebula: [Color]
+
+    init(id: String, name: String, detail: String, gemCost: Int,
+         background: [Color], tileFill: [Color], accent: Color, starTint: Color,
+         nebula: [Color] = []) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.gemCost = gemCost
+        self.background = background
+        self.tileFill = tileFill
+        self.accent = accent
+        self.starTint = starTint
+        self.nebula = nebula
+    }
 }
 
 enum CosmeticCatalog {
@@ -382,28 +467,108 @@ enum CosmeticCatalog {
             background: [Color(red: 0.02, green: 0.01, blue: 0.15),
                          Color(red: 0.05, green: 0.02, blue: 0.30)],
             tileFill: [Color.blue.opacity(0.15), Color.purple.opacity(0.10)],
-            accent: .purple, starTint: .white),
+            accent: .purple, starTint: .white,
+            nebula: [Color.purple.opacity(0.18), Color.blue.opacity(0.14)]),
+
         CosmeticTheme(
             id: "crimson", name: "Crimson Nebula",
             detail: "A galaxy lit by dying stars.", gemCost: 150,
             background: [Color(red: 0.14, green: 0.02, blue: 0.08),
                          Color(red: 0.30, green: 0.04, blue: 0.12)],
             tileFill: [Color.red.opacity(0.16), Color.orange.opacity(0.10)],
-            accent: .orange, starTint: Color(red: 1.0, green: 0.88, blue: 0.80)),
+            accent: .orange, starTint: Color(red: 1.0, green: 0.88, blue: 0.80),
+            nebula: [Color.red.opacity(0.22), Color.orange.opacity(0.16)]),
+
         CosmeticTheme(
             id: "aurora", name: "Aurora Drift",
             detail: "Cold light over a green horizon.", gemCost: 250,
             background: [Color(red: 0.01, green: 0.12, blue: 0.13),
                          Color(red: 0.03, green: 0.26, blue: 0.24)],
             tileFill: [Color.teal.opacity(0.18), Color.green.opacity(0.10)],
-            accent: .teal, starTint: Color(red: 0.85, green: 1.0, blue: 0.95)),
+            accent: .teal, starTint: Color(red: 0.85, green: 1.0, blue: 0.95),
+            nebula: [Color.green.opacity(0.20), Color.teal.opacity(0.18)]),
+
         CosmeticTheme(
             id: "gilded", name: "Golden Expanse",
             detail: "For a galaxy that has clearly done well.", gemCost: 400,
             background: [Color(red: 0.13, green: 0.09, blue: 0.01),
                          Color(red: 0.28, green: 0.20, blue: 0.03)],
             tileFill: [Color.yellow.opacity(0.16), Color.orange.opacity(0.10)],
-            accent: .yellow, starTint: Color(red: 1.0, green: 0.97, blue: 0.82))
+            accent: .yellow, starTint: Color(red: 1.0, green: 0.97, blue: 0.82),
+            nebula: [Color.yellow.opacity(0.20), Color.orange.opacity(0.14)]),
+
+        CosmeticTheme(
+            id: "verdant", name: "Verdant Reach",
+            detail: "Something is growing out here.", gemCost: 300,
+            background: [Color(red: 0.02, green: 0.10, blue: 0.04),
+                         Color(red: 0.06, green: 0.22, blue: 0.09)],
+            tileFill: [Color.green.opacity(0.18), Color.mint.opacity(0.10)],
+            accent: .mint, starTint: Color(red: 0.90, green: 1.0, blue: 0.88),
+            nebula: [Color.green.opacity(0.22), Color.yellow.opacity(0.10)]),
+
+        CosmeticTheme(
+            id: "abyss", name: "The Abyss",
+            detail: "Almost no light reaches here.", gemCost: 500,
+            background: [Color(red: 0.01, green: 0.02, blue: 0.05),
+                         Color(red: 0.02, green: 0.05, blue: 0.11)],
+            tileFill: [Color.cyan.opacity(0.10), Color.blue.opacity(0.06)],
+            accent: .cyan, starTint: Color(red: 0.75, green: 0.92, blue: 1.0),
+            nebula: [Color.cyan.opacity(0.10), Color.blue.opacity(0.08)]),
+
+        CosmeticTheme(
+            id: "ember", name: "Emberfall",
+            detail: "Ash on the wind, and something still burning.", gemCost: 550,
+            background: [Color(red: 0.12, green: 0.05, blue: 0.02),
+                         Color(red: 0.26, green: 0.11, blue: 0.03)],
+            tileFill: [Color.orange.opacity(0.20), Color.red.opacity(0.10)],
+            accent: .orange, starTint: Color(red: 1.0, green: 0.85, blue: 0.65),
+            nebula: [Color.orange.opacity(0.26), Color.red.opacity(0.14)]),
+
+        CosmeticTheme(
+            id: "rose", name: "Rose Quartz",
+            detail: "Soft light, hard vacuum.", gemCost: 350,
+            background: [Color(red: 0.15, green: 0.04, blue: 0.13),
+                         Color(red: 0.32, green: 0.10, blue: 0.27)],
+            tileFill: [Color.pink.opacity(0.18), Color.purple.opacity(0.10)],
+            accent: .pink, starTint: Color(red: 1.0, green: 0.92, blue: 0.96),
+            nebula: [Color.pink.opacity(0.24), Color.purple.opacity(0.16)]),
+
+        CosmeticTheme(
+            id: "monochrome", name: "Silver Silence",
+            detail: "Every colour drained out of it.", gemCost: 700,
+            background: [Color(red: 0.06, green: 0.06, blue: 0.07),
+                         Color(red: 0.16, green: 0.17, blue: 0.19)],
+            tileFill: [Color.white.opacity(0.12), Color.gray.opacity(0.10)],
+            accent: .white, starTint: .white,
+            nebula: [Color.white.opacity(0.10), Color.gray.opacity(0.12)]),
+
+        CosmeticTheme(
+            id: "prism", name: "Prism Field",
+            detail: "Light refuses to pick a direction.", gemCost: 900,
+            background: [Color(red: 0.06, green: 0.02, blue: 0.16),
+                         Color(red: 0.02, green: 0.12, blue: 0.22)],
+            tileFill: [Color.purple.opacity(0.18), Color.cyan.opacity(0.12)],
+            accent: .purple, starTint: .white,
+            nebula: [Color.purple.opacity(0.22), Color.cyan.opacity(0.20),
+                     Color.pink.opacity(0.16)]),
+
+        CosmeticTheme(
+            id: "solarflare", name: "Solar Flare",
+            detail: "Too close to the star, frankly.", gemCost: 800,
+            background: [Color(red: 0.20, green: 0.10, blue: 0.00),
+                         Color(red: 0.38, green: 0.24, blue: 0.02)],
+            tileFill: [Color.yellow.opacity(0.22), Color.red.opacity(0.10)],
+            accent: .yellow, starTint: Color(red: 1.0, green: 0.95, blue: 0.75),
+            nebula: [Color.yellow.opacity(0.30), Color.orange.opacity(0.22)]),
+
+        CosmeticTheme(
+            id: "singularity", name: "Singularity",
+            detail: "The end state of every galaxy.", gemCost: 1500,
+            background: [Color(red: 0.00, green: 0.00, blue: 0.00),
+                         Color(red: 0.08, green: 0.02, blue: 0.14)],
+            tileFill: [Color.purple.opacity(0.22), Color.black.opacity(0.30)],
+            accent: Color(red: 0.75, green: 0.45, blue: 1.0), starTint: .white,
+            nebula: [Color.purple.opacity(0.30), Color.indigo.opacity(0.24)]),
     ]
 
     static let defaultID = "deep_void"
@@ -508,7 +673,8 @@ class IAPManager: ObservableObject {
     /// accumulated, so a lapsed subscription actually stops applying.
     func refreshEntitlements() async {
         var owned = Set<String>()
-        var multiplier = 1.0
+        var oneTimeGrants: [StoreGrant] = []
+        var bestSubscription: StoreGrant?
 
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
@@ -516,13 +682,42 @@ class IAPManager: ObservableObject {
             if transaction.revocationDate != nil { continue }
 
             owned.insert(transaction.productID)
-            if let grant = StoreCatalog.grant(for: transaction.productID) {
-                multiplier *= grant.productionMultiplier
+            guard let grant = StoreCatalog.grant(for: transaction.productID) else { continue }
+
+            if grant.kind == .subscription {
+                // Tiers replace rather than stack. Someone who upgrades from
+                // Pass to Pass+ should get Pass+, not the product of both.
+                if bestSubscription == nil || grant.tier > bestSubscription!.tier {
+                    bestSubscription = grant
+                }
+            } else {
+                oneTimeGrants.append(grant)
             }
         }
 
+        // One-time bundles do stack with each other and with a subscription.
+        var multiplier = 1.0
+        var offlineHours = 0.0
+        var themes = Set<String>()
+        for grant in oneTimeGrants + [bestSubscription].compactMap({ $0 }) {
+            multiplier *= grant.productionMultiplier
+            offlineHours += grant.offlineHours
+            themes.formUnion(grant.themeIDs)
+        }
+
         purchasedProductIDs = owned
-        game?.setPurchaseMultiplier(multiplier)
+        game?.applyEntitlements(multiplier: multiplier,
+                                offlineHours: offlineHours,
+                                themeIDs: themes)
+    }
+
+    /// The highest subscription tier currently active, for the shop UI.
+    var activeSubscriptionTier: Int {
+        purchasedProductIDs
+            .compactMap { StoreCatalog.grant(for: $0) }
+            .filter { $0.kind == .subscription }
+            .map(\.tier)
+            .max() ?? 0
     }
 
     /// The single listener for the transaction stream. `AppDelegate` used to run
@@ -1201,6 +1396,10 @@ class GameViewModel: ObservableObject {
     /// entitlements on every launch rather than saved, so a lapsed subscription
     /// genuinely stops paying out.
     @Published var purchaseMultiplier: Double = 1.0
+    /// Extra offline hours from an active entitlement.
+    @Published var purchaseOfflineHours: Double = 0
+    /// Themes available because of an active purchase, not bought with gems.
+    @Published var entitlementThemeIDs: Set<String> = []
     /// End of a Stellar Surge, if one is running.
     @Published var surgeEndsAt: Date?
 
@@ -1612,7 +1811,7 @@ class GameViewModel: ObservableObject {
     }
 
     var offlineCapHours: Double {
-        baseOfflineHours + 2 * Double(upgradeLevel("offline"))
+        baseOfflineHours + 2 * Double(upgradeLevel("offline")) + purchaseOfflineHours
     }
 
     @discardableResult
@@ -1666,10 +1865,23 @@ class GameViewModel: ObservableObject {
         saveGameState()
     }
 
-    func setPurchaseMultiplier(_ value: Double) {
-        guard value != purchaseMultiplier else { return }
-        purchaseMultiplier = value
-        syncUpgradeEffects()
+    /// Applies whatever the best currently-valid entitlement gives. Rebuilt
+    /// wholesale on every refresh rather than accumulated, so losing a
+    /// subscription actually takes its perks back.
+    func applyEntitlements(multiplier: Double, offlineHours: Double, themeIDs: Set<String>) {
+        let changed = multiplier != purchaseMultiplier
+            || offlineHours != purchaseOfflineHours
+            || themeIDs != entitlementThemeIDs
+
+        purchaseMultiplier = multiplier
+        purchaseOfflineHours = offlineHours
+        entitlementThemeIDs = themeIDs
+
+        // Don't strand the player looking at a theme they no longer have.
+        if !owns(CosmeticCatalog.theme(for: selectedThemeID)) {
+            selectedThemeID = CosmeticCatalog.defaultID
+        }
+        if changed { syncUpgradeEffects() }
     }
 
     // MARK: Gem shop
@@ -1692,9 +1904,31 @@ class GameViewModel: ObservableObject {
                           lifetime: Self.cometLifetime, stardust: payout, shards: 3)
         case "surge":
             // Extends rather than replaces, so buying two isn't a waste.
-            let base = max(Date(), surgeEndsAt ?? Date())
-            surgeEndsAt = base.addingTimeInterval(30 * 60)
-            surgeWasActive = true
+            extendSurge(minutes: 30)
+        case "surge_long":
+            extendSurge(minutes: 240)
+        case "shard_cache":
+            starlightShards += 250
+        case "forge_reset":
+            guard itemsForged > 0 else { return false }
+            itemsForged = 0
+        case "tier_jump":
+            // Upgrade the single strongest placed item one tier.
+            guard let best = placedEntries
+                    .filter({ !$0.item.isMaxTier })
+                    .max(by: { $0.item.baseProduction < $1.item.baseProduction }),
+                  let upgraded = ItemCatalog.makeItem(chainID: best.item.chainID,
+                                                      tier: best.item.tier + 1)
+            else { return false }
+            var placed = upgraded
+            placed.position = (best.tile.row, best.tile.col)
+            gridTiles[best.tile.row][best.tile.col].placedItem = placed
+            highestTierReached = max(highestTierReached, upgraded.tier)
+            announceMerge("\(upgraded.name)")
+        case "open_board":
+            var opened = false
+            while unlockFirstLockedTile() { opened = true }
+            guard opened else { return false }
         default:
             return false
         }
@@ -1706,10 +1940,25 @@ class GameViewModel: ObservableObject {
         return true
     }
 
+    /// Surges extend rather than replace, so buying a second one isn't wasted.
+    private func extendSurge(minutes: Double) {
+        let base = max(Date(), surgeEndsAt ?? Date())
+        surgeEndsAt = base.addingTimeInterval(minutes * 60)
+        surgeWasActive = true
+    }
+
     // MARK: Cosmetics
 
     func owns(_ theme: CosmeticTheme) -> Bool {
-        theme.gemCost == 0 || ownedThemeIDs.contains(theme.id)
+        theme.gemCost == 0
+            || ownedThemeIDs.contains(theme.id)
+            || entitlementThemeIDs.contains(theme.id)
+    }
+
+    /// True when the theme is available because of an active purchase rather
+    /// than having been bought with gems — it goes away if a subscription does.
+    func isEntitlementTheme(_ theme: CosmeticTheme) -> Bool {
+        !ownedThemeIDs.contains(theme.id) && entitlementThemeIDs.contains(theme.id)
     }
 
     @discardableResult
@@ -3213,6 +3462,13 @@ struct CosmicBackground: View {
         )
     }
 
+    /// Fixed cloud placement, so the nebula doesn't crawl around the screen on
+    /// every redraw (this view repaints ten times a second).
+    private let clouds: [(x: CGFloat, y: CGFloat, r: CGFloat)] = [
+        (0.22, 0.18, 0.42), (0.78, 0.30, 0.36), (0.50, 0.62, 0.48),
+        (0.14, 0.80, 0.32), (0.86, 0.86, 0.38),
+    ]
+
     var body: some View {
         Canvas { context, size in
             context.fill(
@@ -3223,6 +3479,28 @@ struct CosmicBackground: View {
                     endPoint: CGPoint(x: size.width, y: size.height)
                 )
             )
+
+            // Soft coloured clouds under the starfield. Without these every
+            // theme reads as the same screen in a slightly different blue.
+            if !theme.nebula.isEmpty {
+                let span = max(size.width, size.height)
+                for (i, cloud) in clouds.enumerated() {
+                    let tint = theme.nebula[i % theme.nebula.count]
+                    let radius = cloud.r * span
+                    let centre = CGPoint(x: cloud.x * size.width, y: cloud.y * size.height)
+                    let rect = CGRect(x: centre.x - radius, y: centre.y - radius,
+                                      width: radius * 2, height: radius * 2)
+                    context.fill(
+                        Path(ellipseIn: rect),
+                        with: .radialGradient(
+                            Gradient(colors: [tint, tint.opacity(0)]),
+                            center: centre,
+                            startRadius: 0,
+                            endRadius: radius
+                        )
+                    )
+                }
+            }
 
             for star in stars {
                 context.fill(
@@ -3518,6 +3796,50 @@ struct GemOfferRow: View {
     }
 }
 
+/// A miniature of the real board in a given palette — background, nebula,
+/// starfield and three tiles. Buying a theme should never be a guess about what
+/// it looks like.
+struct ThemePreview: View {
+    let theme: CosmeticTheme
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let hex = w * 0.34
+            ZStack {
+                CosmicBackground(theme: theme)
+
+                HexagonShape()
+                    .fill(LinearGradient(colors: theme.tileFill,
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay(HexagonShape().stroke(theme.accent.opacity(0.6), lineWidth: 1))
+                    .frame(width: hex, height: hex * 1.15)
+                    .offset(x: -hex * 0.52, y: -hex * 0.3)
+
+                HexagonShape()
+                    .fill(LinearGradient(colors: theme.tileFill,
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay(HexagonShape().stroke(theme.accent.opacity(0.6), lineWidth: 1))
+                    .frame(width: hex, height: hex * 1.15)
+                    .offset(x: hex * 0.52, y: -hex * 0.3)
+
+                HexagonShape()
+                    .fill(LinearGradient(colors: theme.tileFill,
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay(HexagonShape().stroke(theme.accent, lineWidth: 1.5))
+                    .frame(width: hex, height: hex * 1.15)
+                    .offset(y: hex * 0.68)
+
+                Circle()
+                    .fill(theme.accent)
+                    .frame(width: hex * 0.34, height: hex * 0.34)
+                    .blur(radius: 1)
+                    .offset(y: hex * 0.68)
+            }
+        }
+    }
+}
+
 struct ThemeRow: View {
     @EnvironmentObject var gameVM: GameViewModel
     let theme: CosmeticTheme
@@ -3527,27 +3849,14 @@ struct ThemeRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            // A live swatch of the actual palette, so the price buys something
-            // the player has already seen.
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(LinearGradient(colors: theme.background,
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                HexagonShape()
-                    .fill(LinearGradient(colors: theme.tileFill,
-                                         startPoint: .top, endPoint: .bottom))
-                    .frame(width: 26, height: 30)
-                Circle()
-                    .fill(theme.starTint)
-                    .frame(width: 3, height: 3)
-                    .offset(x: -14, y: -10)
-            }
-            .frame(width: 54, height: 54)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(selected ? Color.yellow : Color.white.opacity(0.2),
-                            lineWidth: selected ? 2.5 : 1)
-            )
+            ThemePreview(theme: theme)
+                .frame(width: 84, height: 84)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(selected ? Color.yellow : Color.white.opacity(0.2),
+                                lineWidth: selected ? 2.5 : 1)
+                )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(theme.name)
@@ -3561,14 +3870,28 @@ struct ThemeRow: View {
             Spacer()
 
             if selected {
-                Text("Active")
-                    .font(.caption.bold())
-                    .foregroundColor(.green)
+                VStack(spacing: 2) {
+                    Text("Active")
+                        .font(.caption.bold())
+                        .foregroundColor(.green)
+                    if gameVM.isEntitlementTheme(theme) {
+                        Text("included")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
             } else if owned {
-                Button("Use") { gameVM.selectTheme(theme) }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-                    .font(.caption)
+                VStack(spacing: 2) {
+                    Button("Use") { gameVM.selectTheme(theme) }
+                        .buttonStyle(.bordered)
+                        .tint(.blue)
+                        .font(.caption)
+                    if gameVM.isEntitlementTheme(theme) {
+                        Text("included")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
             } else {
                 Button {
                     gameVM.purchaseTheme(theme)
