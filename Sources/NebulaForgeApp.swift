@@ -40,12 +40,21 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     func authenticateGameCenterPlayer() {
         GKLocalPlayer.local.authenticateHandler = { viewController, error in
+            // Always publish the current state, including failure, so the UI can
+            // disable Game Center affordances rather than offering a button that
+            // opens a modal the player can't escape.
+            GameCenterManager.shared.playerAuthenticated()
+
             if let vc = viewController {
-                // Present Game Center sign-in if needed
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let rootViewController = windowScene.windows.first?.rootViewController {
-                    rootViewController.present(vc, animated: true)
-                }
+                // Present the sign-in sheet only once the app actually has a
+                // foreground scene; at launch `.first` can be one that has no
+                // window yet, and presenting on it does nothing.
+                guard let scene = UIApplication.shared.connectedScenes
+                        .compactMap({ $0 as? UIWindowScene })
+                        .first(where: { $0.activationState == .foregroundActive }),
+                      let root = scene.keyWindow?.rootViewController
+                        ?? scene.windows.first?.rootViewController else { return }
+                root.present(vc, animated: true)
             } else if let error = error {
                 print("Game Center auth failed: \(error.localizedDescription)")
             } else if GKLocalPlayer.local.isAuthenticated {
@@ -233,13 +242,31 @@ class GameCenterManager: NSObject, ObservableObject {
         }
     }
 
+    /// Presents Game Center, or does nothing if it isn't usable yet.
+    ///
+    /// Presenting `GKGameCenterViewController` before authentication completes
+    /// puts up a modal that never finishes loading and never shows its Done
+    /// button — the app looks frozen with no way back. The guard is the fix; the
+    /// button is also disabled in the UI while unauthenticated so the tap isn't
+    /// silently ignored.
     func showLeaderboard() {
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootVC = windowScene.windows.first?.rootViewController else { return }
+        guard isAuthenticated else { return }
 
-        let gcVC = GKGameCenterViewController(leaderboardID: "nebulaforge.totalstarlight", playerScope: .global, timeScope: .allTime)
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let root = scene.keyWindow?.rootViewController
+                ?? scene.windows.first?.rootViewController else { return }
+
+        // Presenting on a controller that is already presenting does nothing at
+        // all, so walk to whatever is actually on top.
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+
+        let gcVC = GKGameCenterViewController(state: .leaderboards)
         gcVC.gameCenterDelegate = self
-        rootVC.present(gcVC, animated: true)
+        top.present(gcVC, animated: true)
     }
 }
 
@@ -2576,6 +2603,9 @@ struct GridPosition: Hashable {
 /// showed each other.
 struct GalacticCanvasView: View {
     @EnvironmentObject var gameVM: GameViewModel
+    /// Drives the trophy button's enabled state — tapping it before Game Center
+    /// authenticates was presenting an inescapable blank modal.
+    @ObservedObject private var gameCenter = GameCenterManager.shared
 
     // Tap-to-select rather than drag-and-drop: drag gestures fight the
     // enclosing ScrollView on iPhone and were effectively unusable.
@@ -2697,8 +2727,9 @@ struct GalacticCanvasView: View {
                         GameCenterManager.shared.showLeaderboard()
                     } label: {
                         Image(systemName: "trophy.fill")
-                            .foregroundColor(.yellow)
+                            .foregroundColor(gameCenter.isAuthenticated ? .yellow : .gray)
                     }
+                    .disabled(!gameCenter.isAuthenticated)
                 }
             }
             .sheet(isPresented: $showTutorial) {
