@@ -835,57 +835,57 @@ enum SkinCatalog {
 
         SpriteSkin(id: "anime", name: "Anime Ink",
                    detail: "Cel-shaded with hard ink outlines. Merges pay far more, output runs a little lean.",
-                   prefix: "anime", gemCost: 1500,
+                   prefix: "anime", gemCost: 1800,
                    effect: CosmeticEffect(production: 0.95, shards: 1.30)),
 
         SpriteSkin(id: "cyber", name: "Cyberpunk",
                    detail: "Neon and chrome. Comets arrive constantly, but each one carries less.",
-                   prefix: "cyber", gemCost: 1500,
+                   prefix: "cyber", gemCost: 1800,
                    effect: CosmeticEffect(cometInterval: 0.6, cometValue: 0.85)),
 
         SpriteSkin(id: "medieval", name: "Medieval",
                    detail: "Hammered iron and gold leaf. Your galaxy keeps working far longer while you're away.",
-                   prefix: "medieval", gemCost: 1500,
+                   prefix: "medieval", gemCost: 1800,
                    effect: CosmeticEffect(production: 0.92, offlineHours: 8)),
 
         SpriteSkin(id: "fantasy", name: "High Fantasy",
                    detail: "Storybook enamel. Fusions pay double, ordinary merges a little less.",
-                   prefix: "fantasy", gemCost: 1800,
+                   prefix: "fantasy", gemCost: 2200,
                    effect: CosmeticEffect(shards: 0.9, fusionShards: 2.0)),
 
         SpriteSkin(id: "dragon", name: "Dragonscale",
                    detail: "Scaled and molten. Fire burns far hotter; Ice suffers for it.",
-                   prefix: "dragon", gemCost: 1800,
+                   prefix: "dragon", gemCost: 2200,
                    effect: CosmeticEffect(elementBonus: [.fire: 1.40, .ice: 0.85])),
 
         SpriteSkin(id: "frost", name: "Frostbound",
                    detail: "Carved glacier. Ice dominates; Fire gutters.",
-                   prefix: "frost", gemCost: 1800,
+                   prefix: "frost", gemCost: 2200,
                    effect: CosmeticEffect(elementBonus: [.ice: 1.40, .fire: 0.85])),
 
         SpriteSkin(id: "eldritch", name: "Eldritch",
                    detail: "Wrong angles and too many eyes. Void devours; Radiant dims.",
-                   prefix: "eldritch", gemCost: 1800,
+                   prefix: "eldritch", gemCost: 2200,
                    effect: CosmeticEffect(elementBonus: [.void: 1.40, .radiant: 0.85])),
 
         SpriteSkin(id: "celestial", name: "Celestial",
                    detail: "Stained glass and gold. Radiant blazes; Void recedes.",
-                   prefix: "celestial", gemCost: 1800,
+                   prefix: "celestial", gemCost: 2200,
                    effect: CosmeticEffect(elementBonus: [.radiant: 1.40, .void: 0.85])),
 
         SpriteSkin(id: "clockwork", name: "Clockwork",
                    detail: "Brass gears and escapements. Forging gets much cheaper, merges pay less.",
-                   prefix: "clockwork", gemCost: 2000,
+                   prefix: "clockwork", gemCost: 2500,
                    effect: CosmeticEffect(shards: 0.85, forgeCost: 0.7)),
 
         SpriteSkin(id: "biolume", name: "Bioluminescent",
                    detail: "Deep-sea glow. Raw output climbs, but nothing else improves.",
-                   prefix: "biolume", gemCost: 2000,
+                   prefix: "biolume", gemCost: 2500,
                    effect: CosmeticEffect(production: 1.25, cometValue: 0.9)),
 
         SpriteSkin(id: "vapor", name: "Vaporwave",
                    detail: "Pink grids and dead malls. Shards pour in; production idles.",
-                   prefix: "vapor", gemCost: 2000,
+                   prefix: "vapor", gemCost: 2500,
                    effect: CosmeticEffect(production: 0.88, shards: 1.45)),
     ]
 
@@ -1022,7 +1022,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "crimson", name: "Crimson Nebula",
-            detail: "A galaxy lit by dying stars.", gemCost: 150,
+            detail: "A galaxy lit by dying stars.", gemCost: 200,
             background: [Color(red: 0.14, green: 0.02, blue: 0.08),
                          Color(red: 0.30, green: 0.04, blue: 0.12)],
             tileFill: [Color.red.opacity(0.16), Color.orange.opacity(0.10)],
@@ -1032,7 +1032,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "aurora", name: "Aurora Drift",
-            detail: "Cold light over a green horizon.", gemCost: 250,
+            detail: "Cold light over a green horizon.", gemCost: 350,
             background: [Color(red: 0.01, green: 0.12, blue: 0.13),
                          Color(red: 0.03, green: 0.26, blue: 0.24)],
             tileFill: [Color.teal.opacity(0.18), Color.green.opacity(0.10)],
@@ -1042,7 +1042,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "gilded", name: "Golden Expanse",
-            detail: "For a galaxy that has clearly done well.", gemCost: 400,
+            detail: "For a galaxy that has clearly done well.", gemCost: 550,
             background: [Color(red: 0.13, green: 0.09, blue: 0.01),
                          Color(red: 0.28, green: 0.20, blue: 0.03)],
             tileFill: [Color.yellow.opacity(0.16), Color.orange.opacity(0.10)],
@@ -1052,7 +1052,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "verdant", name: "Verdant Reach",
-            detail: "Something is growing out here.", gemCost: 300,
+            detail: "Something is growing out here.", gemCost: 400,
             background: [Color(red: 0.02, green: 0.10, blue: 0.04),
                          Color(red: 0.06, green: 0.22, blue: 0.09)],
             tileFill: [Color.green.opacity(0.18), Color.mint.opacity(0.10)],
@@ -1062,7 +1062,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "abyss", name: "The Abyss",
-            detail: "Almost no light reaches here.", gemCost: 500,
+            detail: "Almost no light reaches here.", gemCost: 650,
             background: [Color(red: 0.01, green: 0.02, blue: 0.05),
                          Color(red: 0.02, green: 0.05, blue: 0.11)],
             tileFill: [Color.cyan.opacity(0.10), Color.blue.opacity(0.06)],
@@ -1072,7 +1072,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "ember", name: "Emberfall",
-            detail: "Ash on the wind, and something still burning.", gemCost: 550,
+            detail: "Ash on the wind, and something still burning.", gemCost: 700,
             background: [Color(red: 0.12, green: 0.05, blue: 0.02),
                          Color(red: 0.26, green: 0.11, blue: 0.03)],
             tileFill: [Color.orange.opacity(0.20), Color.red.opacity(0.10)],
@@ -1082,7 +1082,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "rose", name: "Rose Quartz",
-            detail: "Soft light, hard vacuum.", gemCost: 350,
+            detail: "Soft light, hard vacuum.", gemCost: 450,
             background: [Color(red: 0.15, green: 0.04, blue: 0.13),
                          Color(red: 0.32, green: 0.10, blue: 0.27)],
             tileFill: [Color.pink.opacity(0.18), Color.purple.opacity(0.10)],
@@ -1092,7 +1092,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "monochrome", name: "Silver Silence",
-            detail: "Every colour drained out of it.", gemCost: 700,
+            detail: "Every colour drained out of it.", gemCost: 900,
             background: [Color(red: 0.06, green: 0.06, blue: 0.07),
                          Color(red: 0.16, green: 0.17, blue: 0.19)],
             tileFill: [Color.white.opacity(0.12), Color.gray.opacity(0.10)],
@@ -1102,7 +1102,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "prism", name: "Prism Field",
-            detail: "Light refuses to pick a direction.", gemCost: 900,
+            detail: "Light refuses to pick a direction.", gemCost: 1200,
             background: [Color(red: 0.06, green: 0.02, blue: 0.16),
                          Color(red: 0.02, green: 0.12, blue: 0.22)],
             tileFill: [Color.purple.opacity(0.18), Color.cyan.opacity(0.12)],
@@ -1113,7 +1113,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "solarflare", name: "Solar Flare",
-            detail: "Too close to the star, frankly.", gemCost: 800,
+            detail: "Too close to the star, frankly.", gemCost: 1000,
             background: [Color(red: 0.20, green: 0.10, blue: 0.00),
                          Color(red: 0.38, green: 0.24, blue: 0.02)],
             tileFill: [Color.yellow.opacity(0.22), Color.red.opacity(0.10)],
@@ -1123,7 +1123,7 @@ enum CosmeticCatalog {
 
         CosmeticTheme(
             id: "singularity", name: "Singularity",
-            detail: "The end state of every galaxy.", gemCost: 1500,
+            detail: "The end state of every galaxy.", gemCost: 2000,
             background: [Color(red: 0.00, green: 0.00, blue: 0.00),
                          Color(red: 0.08, green: 0.02, blue: 0.14)],
             tileFill: [Color.purple.opacity(0.22), Color.black.opacity(0.30)],
@@ -1545,10 +1545,16 @@ enum GoalCatalog {
              target: 50, shardReward: 30, gemReward: 3, category: .merging) { $0.totalMerges },
         Goal(id: "merge_100", title: "Century", detail: "Complete 100 merges",
              target: 100, shardReward: 60, gemReward: 5, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_250", title: "Finding the Rhythm", detail: "Complete 250 merges",
+             target: 250, shardReward: 120, gemReward: 9, category: .merging) { $0.totalMerges },
         Goal(id: "merge_500", title: "Forge Master", detail: "Complete 500 merges",
              target: 500, shardReward: 200, gemReward: 15, category: .merging) { $0.totalMerges },
         Goal(id: "merge_2000", title: "The Long Work", detail: "Complete 2,000 merges",
              target: 2000, shardReward: 750, gemReward: 40, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_5000", title: "Unbroken Rhythm", detail: "Complete 5,000 merges",
+             target: 5000, shardReward: 1800, gemReward: 80, category: .merging) { $0.totalMerges },
+        Goal(id: "merge_20000", title: "The Endless Forge", detail: "Complete 20,000 merges",
+             target: 20000, shardReward: 6000, gemReward: 200, category: .merging) { $0.totalMerges },
 
         Goal(id: "tier_3", title: "Rising Power", detail: "Create a tier 3 item",
              target: 3, shardReward: 15, gemReward: 2, category: .merging) { $0.highestTierReached },
@@ -1564,8 +1570,14 @@ enum GoalCatalog {
              target: 1, shardReward: 30, gemReward: 4, category: .merging) { $0.totalFusions },
         Goal(id: "fusion_10", title: "Alchemist", detail: "Complete 10 fusions",
              target: 10, shardReward: 90, gemReward: 10, category: .merging) { $0.totalFusions },
+        Goal(id: "fusion_25", title: "Boundary Breaker", detail: "Complete 25 fusions",
+             target: 25, shardReward: 180, gemReward: 16, category: .merging) { $0.totalFusions },
         Goal(id: "fusion_50", title: "Opposites Attract", detail: "Complete 50 fusions",
              target: 50, shardReward: 300, gemReward: 25, category: .merging) { $0.totalFusions },
+        Goal(id: "fusion_200", title: "Transmuter", detail: "Complete 200 fusions",
+             target: 200, shardReward: 1200, gemReward: 70, category: .merging) { $0.totalFusions },
+        Goal(id: "fusion_1000", title: "Master of Opposites", detail: "Complete 1,000 fusions",
+             target: 1000, shardReward: 4000, gemReward: 180, category: .merging) { $0.totalFusions },
         Goal(id: "hybrids_all", title: "Full Spectrum",
              detail: "Discover all four hybrid chains",
              target: 4, shardReward: 400, gemReward: 40, category: .merging) {
@@ -1594,6 +1606,26 @@ enum GoalCatalog {
              detail: "Reach 100,000 Stardust per second",
              target: 100_000, shardReward: 400, gemReward: 35, category: .building) {
                  Int(min($0.idleEngine.totalProductionPerSec, 10_000_000)) },
+        Goal(id: "place_30", title: "Dense Sky", detail: "Have 30 items on the board at once",
+             target: 30, shardReward: 300, gemReward: 25, category: .building) { $0.placedCount },
+        Goal(id: "place_all", title: "Not One Empty Tile",
+             detail: "Fill every unlocked tile at once",
+             target: GameViewModel.totalTiles, shardReward: 900, gemReward: 70,
+             category: .building) { $0.placedCount },
+        Goal(id: "forge_1000", title: "Mass Production", detail: "Forge 1,000 items",
+             target: 1000, shardReward: 700, gemReward: 45, category: .building) { $0.lifetimeForged },
+        Goal(id: "forge_5000", title: "The Great Works", detail: "Forge 5,000 items",
+             target: 5000, shardReward: 2500, gemReward: 120, category: .building) { $0.lifetimeForged },
+        // The clamps rise with each rung so the progress bar keeps moving
+        // instead of pinning at the previous goal's ceiling.
+        Goal(id: "rate_1m", title: "Stellar Economy",
+             detail: "Reach 1,000,000 Stardust per second",
+             target: 1_000_000, shardReward: 1200, gemReward: 75, category: .building) {
+                 Int(min($0.idleEngine.totalProductionPerSec, 100_000_000)) },
+        Goal(id: "rate_100m", title: "Galactic Output",
+             detail: "Reach 100,000,000 Stardust per second",
+             target: 100_000_000, shardReward: 4000, gemReward: 220, category: .building) {
+                 Int(min($0.idleEngine.totalProductionPerSec, 10_000_000_000)) },
 
         // MARK: Prestige
         Goal(id: "prestige_1", title: "Reborn", detail: "Trigger your first Supernova",
@@ -1611,6 +1643,23 @@ enum GoalCatalog {
              target: UpgradeCatalog.all.reduce(0) { $0 + $1.maxLevel },
              shardReward: 800, gemReward: 75, category: .prestige) { vm in
                  UpgradeCatalog.all.reduce(0) { $0 + vm.upgradeLevel($1.id) } },
+        Goal(id: "prestige_100", title: "A Hundred Deaths", detail: "Trigger 100 Supernovas",
+             target: 100, shardReward: 2500, gemReward: 150, category: .prestige) { $0.prestigeCount },
+        Goal(id: "prestige_500", title: "The Wheel Turns", detail: "Trigger 500 Supernovas",
+             target: 500, shardReward: 8000, gemReward: 400, category: .prestige) { $0.prestigeCount },
+        Goal(id: "marks_1000", title: "Architect of Galaxies", detail: "Earn 1,000 Galaxy Marks",
+             target: 1000, shardReward: 2000, gemReward: 120, category: .prestige) { $0.galaxyMarks },
+        Goal(id: "marks_10000", title: "Mark of Ten Thousand",
+             detail: "Earn 10,000 Galaxy Marks",
+             target: 10000, shardReward: 7000, gemReward: 350, category: .prestige) { $0.galaxyMarks },
+        // Held, not lifetime — this one asks you to bank rather than spend,
+        // which is a different decision from every other goal here.
+        Goal(id: "shards_10k", title: "Shard Hoard", detail: "Hold 10,000 Starlight Shards",
+             target: 10_000, shardReward: 500, gemReward: 30,
+             category: .prestige) { $0.starlightShards },
+        Goal(id: "shards_250k", title: "The Vault", detail: "Hold 250,000 Starlight Shards",
+             target: 250_000, shardReward: 3000, gemReward: 150,
+             category: .prestige) { $0.starlightShards },
 
         // MARK: Habit
         Goal(id: "streak_3", title: "Regular Orbit", detail: "Collect the daily reward 3 days running",
@@ -1627,6 +1676,22 @@ enum GoalCatalog {
              target: 3, shardReward: 60, gemReward: 5, category: .habit) { $0.ownedThemeIDs.count },
         Goal(id: "themes_6", title: "Interior Designer", detail: "Own 6 themes",
              target: 6, shardReward: 200, gemReward: 20, category: .habit) { $0.ownedThemeIDs.count },
+        Goal(id: "streak_14", title: "Fortnight", detail: "Reach a 14-day streak",
+             target: 14, shardReward: 350, gemReward: 45, category: .habit) { $0.dailyStreak },
+        Goal(id: "streak_30", title: "A Full Month", detail: "Reach a 30-day streak",
+             target: 30, shardReward: 900, gemReward: 100, category: .habit) { $0.dailyStreak },
+        Goal(id: "streak_100", title: "Constant Star", detail: "Reach a 100-day streak",
+             target: 100, shardReward: 3000, gemReward: 300, category: .habit) { $0.dailyStreak },
+        Goal(id: "comet_500", title: "Comet Sovereign", detail: "Catch 500 comets",
+             target: 500, shardReward: 1500, gemReward: 90, category: .habit) { $0.cometsCaught },
+        // Targets derive from the catalogs so adding a theme or a sprite pack
+        // can't quietly leave a completion goal stranded at an old number.
+        Goal(id: "themes_all", title: "Every Sky", detail: "Own every theme",
+             target: CosmeticCatalog.all.count, shardReward: 1500, gemReward: 100,
+             category: .habit) { $0.ownedThemeIDs.count },
+        Goal(id: "skins_3", title: "Wardrobe", detail: "Own 3 sprite skins",
+             target: 3, shardReward: 800, gemReward: 60,
+             category: .habit) { $0.ownedSkinIDs.count },
     ]
 
     static func inCategory(_ category: Goal.Category) -> [Goal] {
@@ -1669,6 +1734,20 @@ enum DailyQuestCatalog {
                    target: 1, gemReward: 10) { $0.todayPrestiges },
         DailyQuest(id: "q_tile_1", title: "Unlock a tile", icon: "lock.open.fill",
                    target: 1, gemReward: 5) { $0.todayTilesUnlocked },
+        // Heavier versions of the same tasks. With only seven in the pool a
+        // regular player saw the same three every couple of days; twelve keeps
+        // the rotation from going stale, and the bigger targets give someone
+        // deep into a run something that isn't already done by breakfast.
+        DailyQuest(id: "q_merge_150", title: "Merge 150 items", icon: "circle.grid.cross.fill",
+                   target: 150, gemReward: 14) { $0.todayMerges },
+        DailyQuest(id: "q_fuse_5", title: "Complete 5 fusions", icon: "wand.and.stars",
+                   target: 5, gemReward: 12) { $0.todayFusions },
+        DailyQuest(id: "q_forge_30", title: "Forge 30 items", icon: "hammer.fill",
+                   target: 30, gemReward: 9) { $0.todayForged },
+        DailyQuest(id: "q_comet_8", title: "Catch 8 comets", icon: "sparkles",
+                   target: 8, gemReward: 13) { $0.todayComets },
+        DailyQuest(id: "q_tile_3", title: "Unlock 3 tiles", icon: "lock.open.fill",
+                   target: 3, gemReward: 12) { $0.todayTilesUnlocked },
     ]
 
     /// Three quests, chosen by the calendar day so they're the same on every
