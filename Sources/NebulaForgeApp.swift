@@ -5,6 +5,7 @@ import CoreData
 import Combine
 import SpriteKit
 import AVFoundation
+import UserNotifications
 
 // MARK: - App Entry Point & Privacy Compliance
 @main
@@ -432,6 +433,61 @@ enum GemShopCatalog {
                  detail: "Unlock every remaining tile at once.",
                  icon: "square.grid.3x3.fill", gemCost: 600),
     ]
+}
+
+// MARK: - Limited-time offers
+/// A gem-shop item on sale for a fixed window.
+///
+/// The window is derived from wall-clock time rather than from when the player
+/// happened to install, so the countdown is a real deadline and not a per-device
+/// fiction that resets whenever the app is reopened.
+struct TimedOffer: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let icon: String
+    let fullPrice: Int
+    let salePrice: Int
+    let expiresAt: Date
+
+    var discountPercent: Int {
+        guard fullPrice > 0 else { return 0 }
+        return max(0, 100 - Int((Double(salePrice) / Double(fullPrice)) * 100))
+    }
+
+    var secondsRemaining: Int { max(0, Int(expiresAt.timeIntervalSinceNow)) }
+    var isExpired: Bool { Date() >= expiresAt }
+
+    var countdown: String {
+        let s = secondsRemaining
+        let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+        return h > 0 ? String(format: "%dh %02dm", h, m)
+                     : String(format: "%dm %02ds", m, sec)
+    }
+}
+
+enum OfferCatalog {
+    /// Deals rotate on a fixed cadence keyed to the clock, so every player sees
+    /// the same offer at the same time and the timer can't be gamed by
+    /// reinstalling.
+    static let windowHours: Double = 8
+
+    static func current(now: Date = Date()) -> TimedOffer? {
+        let pool = GemShopCatalog.all
+        guard !pool.isEmpty else { return nil }
+
+        let windowLength = windowHours * 3600
+        let window = floor(now.timeIntervalSince1970 / windowLength)
+        let endsAt = Date(timeIntervalSince1970: (window + 1) * windowLength)
+
+        let offer = pool[abs(Int(window)) % pool.count]
+        // A third off, rounded to something that reads like a price.
+        let sale = max(1, Int((Double(offer.gemCost) * 0.65).rounded()))
+
+        return TimedOffer(id: offer.id, title: offer.title, detail: offer.detail,
+                          icon: offer.icon, fullPrice: offer.gemCost,
+                          salePrice: sale, expiresAt: endsAt)
+    }
 }
 
 // MARK: - Cosmetics
@@ -1409,6 +1465,8 @@ class GameViewModel: ObservableObject {
     /// End of a Stellar Surge, if one is running.
     @Published var surgeEndsAt: Date?
 
+    /// Whether any paid purchase has ever completed, for the double-gems offer.
+    @Published var hasMadeFirstPurchase: Bool = false
     @Published var ownedThemeIDs: Set<String> = [CosmeticCatalog.defaultID]
     @Published var selectedThemeID: String = CosmeticCatalog.defaultID
 
@@ -1506,6 +1564,7 @@ class GameViewModel: ObservableObject {
         static let dailyStreak = "nf.dailyStreak"
         static let lastDailyClaim = "nf.lastDailyClaim"
         static let surgeEndsAt = "nf.surgeEndsAt"
+        static let firstPurchase = "nf.hasMadeFirstPurchase"
         static let ownedThemes = "nf.ownedThemes"
         static let selectedTheme = "nf.selectedTheme"
     }
@@ -1862,14 +1921,23 @@ class GameViewModel: ObservableObject {
     /// Hands over what a real-money product bought. Called once per transaction
     /// by `IAPManager`, which owns the exactly-once bookkeeping.
     func applyStoreGrant(_ grant: StoreGrant, productID: String) {
-        nebulaGems += grant.gems
+        // First real purchase pays double gems. Advertised up front rather than
+        // sprung afterwards — it's the offer, not a surprise.
+        let doubled = !hasMadeFirstPurchase && grant.gems > 0
+        let gems = doubled ? grant.gems * 2 : grant.gems
+
+        nebulaGems += gems
         starlightShards += grant.shards
         if grant.gems > 0 || grant.shards > 0 {
-            announceMerge("Purchase   +\(grant.gems) Gems")
+            hasMadeFirstPurchase = true
+            announceMerge("\(doubled ? "DOUBLED · " : "")+\(gems) Gems")
         }
         Feedback.purchase()
         saveGameState()
     }
+
+    /// True until the player's first paid purchase lands.
+    var firstPurchaseBonusAvailable: Bool { !hasMadeFirstPurchase }
 
     /// Applies whatever the best currently-valid entitlement gives. Rebuilt
     /// wholesale on every refresh rather than accumulated, so losing a
@@ -1892,9 +1960,24 @@ class GameViewModel: ObservableObject {
 
     // MARK: Gem shop
 
+    /// The deal currently running, or nil once it lapses.
+    var currentOffer: TimedOffer? {
+        guard let offer = OfferCatalog.current(), !offer.isExpired else { return nil }
+        return offer
+    }
+
+    /// Buys the running deal at its sale price.
     @discardableResult
-    func buy(_ offer: GemOffer) -> Bool {
-        guard nebulaGems >= offer.gemCost else { return false }
+    func buyOffer(_ timed: TimedOffer) -> Bool {
+        guard let offer = GemShopCatalog.all.first(where: { $0.id == timed.id }),
+              !timed.isExpired else { return false }
+        return buy(offer, price: timed.salePrice)
+    }
+
+    @discardableResult
+    func buy(_ offer: GemOffer, price: Int? = nil) -> Bool {
+        let cost = price ?? offer.gemCost
+        guard nebulaGems >= cost else { return false }
 
         // Anything that can't be delivered mustn't take the gems.
         switch offer.id {
@@ -1939,7 +2022,7 @@ class GameViewModel: ObservableObject {
             return false
         }
 
-        nebulaGems -= offer.gemCost
+        nebulaGems -= cost
         syncUpgradeEffects()
         Feedback.purchase()
         saveGameState()
@@ -2146,6 +2229,7 @@ class GameViewModel: ObservableObject {
         if let lastDailyClaim {
             defaults.set(lastDailyClaim, forKey: DefaultsKey.lastDailyClaim)
         }
+        defaults.set(hasMadeFirstPurchase, forKey: DefaultsKey.firstPurchase)
         defaults.set(Array(ownedThemeIDs), forKey: DefaultsKey.ownedThemes)
         defaults.set(selectedThemeID, forKey: DefaultsKey.selectedTheme)
         // A surge is wall-clock time the player paid for, so it keeps running
@@ -2230,6 +2314,7 @@ class GameViewModel: ObservableObject {
         dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
         lastDailyClaim = defaults.object(forKey: DefaultsKey.lastDailyClaim) as? Date
 
+        hasMadeFirstPurchase = defaults.bool(forKey: DefaultsKey.firstPurchase)
         let saved = Set(defaults.stringArray(forKey: DefaultsKey.ownedThemes) ?? [])
         ownedThemeIDs = saved.union([CosmeticCatalog.defaultID])
         let savedTheme = defaults.string(forKey: DefaultsKey.selectedTheme) ?? CosmeticCatalog.defaultID
@@ -2331,6 +2416,7 @@ struct ContentView: View {
     @State private var showTutorial = false
     @State private var showOfflineEarnings = false
     @State private var showDailyReward = false
+    @Environment(\.scenePhase) private var scenePhase
 
     // Merging and producing now happen on the same board, so the old separate
     // Merge tab is gone — placement decisions and their payoff are visible
@@ -2382,7 +2468,25 @@ struct ContentView: View {
             // Wire the store to the game here rather than in ShopView, so
             // subscription multipliers apply even if the player never opens it.
             IAPManager.shared.attach(gameVM)
+            NotificationManager.shared.refreshStatus()
+            NotificationManager.shared.clearBadge()
             showNextPrompt()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                // Rebuilt on the way out so a stale reminder can't fire after
+                // the player has already been back.
+                NotificationManager.shared.rescheduleStreakReminder(
+                    streak: gameVM.dailyStreak,
+                    claimedToday: gameVM.pendingDailyReward == nil)
+                gameVM.saveGameState()
+            case .active:
+                NotificationManager.shared.clearBadge()
+                Task { await IAPManager.shared.refreshEntitlements() }
+            default:
+                break
+            }
         }
     }
 
@@ -2604,6 +2708,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @ObservedObject private var audio = AudioManager.shared
     @ObservedObject private var gameCenter = GameCenterManager.shared
+    @ObservedObject private var notifications = NotificationManager.shared
     @StateObject private var iapManager = IAPManager.shared
     @State private var restoring = false
 
@@ -2621,14 +2726,36 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         card {
-                            Toggle(isOn: Binding(
-                                get: { !audio.isMuted },
-                                set: { audio.isMuted = !$0 }
-                            )) {
-                                Label("Sound Effects", systemImage: "speaker.wave.2.fill")
-                                    .foregroundColor(.white)
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle(isOn: Binding(
+                                    get: { !audio.isMuted },
+                                    set: { audio.isMuted = !$0 }
+                                )) {
+                                    Label("Sound Effects", systemImage: "speaker.wave.2.fill")
+                                        .foregroundColor(.white)
+                                }
+                                .tint(.purple)
+
+                                Divider().background(Color.white.opacity(0.2))
+
+                                HStack {
+                                    Label("Daily Reminder", systemImage: "bell.fill")
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    if notifications.isAuthorized {
+                                        Text("On").font(.caption).foregroundColor(.green)
+                                    } else if notifications.hasAsked {
+                                        Link("Enable in Settings",
+                                             destination: URL(string: UIApplication.openSettingsURLString)!)
+                                            .font(.caption)
+                                    } else {
+                                        Button("Turn On") { notifications.requestPermission() }
+                                            .font(.caption)
+                                            .buttonStyle(.bordered)
+                                            .tint(.purple)
+                                    }
+                                }
                             }
-                            .tint(.purple)
                         }
 
                         card {
@@ -2766,6 +2893,13 @@ struct DailyRewardView: View {
 
                     Button {
                         gameVM.claimDailyReward()
+                        // Best possible moment to ask: they've just been handed
+                        // something and the streak is the thing at stake. iOS
+                        // only lets you ask once, so a cold launch prompt would
+                        // waste it.
+                        if !NotificationManager.shared.hasAsked {
+                            NotificationManager.shared.requestPermission()
+                        }
                         dismiss()
                     } label: {
                         Text("Collect")
@@ -3824,6 +3958,8 @@ struct ShopView: View {
 
                     ScrollView {
                         VStack(spacing: 12) {
+                            offerBanner
+                            firstPurchaseBanner
                             switch shelf {
                             case .boosts: boostShelf
                             case .cosmetics: cosmeticShelf
@@ -3843,9 +3979,112 @@ struct ShopView: View {
         }
     }
 
+    /// The rotating deal. Shown on every shelf, because the point of a deadline
+    /// is that you see it.
+    @ViewBuilder
+    private var offerBanner: some View {
+        if let offer = gameVM.currentOffer {
+            let affordable = gameVM.nebulaGems >= offer.salePrice
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Limited Time", systemImage: "clock.fill")
+                        .font(.caption.bold())
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.yellow))
+                    Spacer()
+                    Text(offer.countdown)
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundColor(.yellow)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: offer.icon)
+                        .font(.title2)
+                        .foregroundColor(.yellow)
+                        .frame(width: 30)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(offer.title)
+                            .font(.subheadline.bold())
+                            .foregroundColor(.white)
+                        Text(offer.detail)
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+
+                    Spacer()
+
+                    Button {
+                        if affordable {
+                            gameVM.buyOffer(offer)
+                        } else {
+                            shelf = .gems
+                        }
+                    } label: {
+                        VStack(spacing: 0) {
+                            Text("\(offer.fullPrice)")
+                                .font(.caption2)
+                                .strikethrough()
+                                .foregroundColor(.white.opacity(0.6))
+                            Label("\(offer.salePrice)", systemImage: "diamond.fill")
+                                .font(.caption.bold())
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(affordable ? .green : .purple)
+                }
+
+                if !affordable {
+                    Text("Not enough Gems — tap to top up")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding()
+            .background(.ultraThinMaterial)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.yellow.opacity(0.6), lineWidth: 1.5))
+            .cornerRadius(14)
+        }
+    }
+
+    /// Shown until the first paid purchase lands.
+    @ViewBuilder
+    private var firstPurchaseBanner: some View {
+        if gameVM.firstPurchaseBonusAvailable {
+            Button {
+                shelf = .gems
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "gift.fill")
+                        .font(.title2)
+                        .foregroundColor(.pink)
+                        .frame(width: 30)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("First Purchase: Double Gems")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.white)
+                        Text("Your first gem pack pays twice. Once only.")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.pink.opacity(0.6), lineWidth: 1.5))
+                .cornerRadius(14)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var boostShelf: some View {
         ForEach(GemShopCatalog.all) { offer in
-            GemOfferRow(offer: offer)
+            GemOfferRow(offer: offer, onNeedGems: { shelf = .gems })
         }
     }
 
@@ -3894,6 +4133,8 @@ struct ShopView: View {
 struct GemOfferRow: View {
     @EnvironmentObject var gameVM: GameViewModel
     let offer: GemOffer
+    /// Tapping an unaffordable item should go somewhere, not just be dead.
+    var onNeedGems: () -> Void = {}
 
     private var affordable: Bool { gameVM.nebulaGems >= offer.gemCost }
 
@@ -3916,14 +4157,19 @@ struct GemOfferRow: View {
             Spacer()
 
             Button {
-                gameVM.buy(offer)
+                if affordable {
+                    gameVM.buy(offer)
+                } else {
+                    onNeedGems()
+                }
             } label: {
                 Label("\(offer.gemCost)", systemImage: "diamond.fill")
                     .font(.caption.bold())
             }
             .buttonStyle(.borderedProminent)
-            .tint(.purple)
-            .disabled(!affordable)
+            // Deliberately not disabled: an unaffordable price is the moment to
+            // offer gems, not a dead end.
+            .tint(affordable ? .purple : .gray)
         }
         .padding()
         .background(.ultraThinMaterial)
@@ -4092,6 +4338,79 @@ struct ShopProductRow: View {
         .padding()
         .background(.ultraThinMaterial)
         .cornerRadius(15)
+    }
+}
+
+// MARK: - Notifications
+/// Local reminders only — nothing leaves the device and there's no push server.
+///
+/// Permission is deliberately not requested at launch. A cold prompt before the
+/// player knows what the game is gets denied, and iOS only asks once.
+final class NotificationManager: ObservableObject {
+    static let shared = NotificationManager()
+
+    @Published var isAuthorized = false
+    @Published var hasAsked: Bool {
+        didSet { UserDefaults.standard.set(hasAsked, forKey: "nf.askedNotifications") }
+    }
+
+    private init() {
+        hasAsked = UserDefaults.standard.bool(forKey: "nf.askedNotifications")
+        refreshStatus()
+    }
+
+    func refreshStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            DispatchQueue.main.async {
+                self.isAuthorized = settings.authorizationStatus == .authorized
+            }
+        }
+    }
+
+    func requestPermission() {
+        hasAsked = true
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                DispatchQueue.main.async {
+                    self.isAuthorized = granted
+                }
+            }
+    }
+
+    /// Rescheduled from scratch on every app background, so a stale reminder
+    /// can't fire after the player has already come back.
+    func rescheduleStreakReminder(streak: Int, claimedToday: Bool) {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["nf.streak"])
+        guard isAuthorized else { return }
+
+        let content = UNMutableNotificationContent()
+        if claimedToday {
+            content.title = "Your galaxy is still turning"
+            content.body = streak > 1
+                ? "Day \(streak + 1) of your streak is ready. Don't drop it now."
+                : "Come back tomorrow to start a streak."
+        } else {
+            content.title = "Today's reward is waiting"
+            content.body = streak > 1
+                ? "Collect it to keep your \(streak)-day streak alive."
+                : "Collect your daily Gems and Shards."
+        }
+        content.sound = .default
+
+        // Early evening the following day: late enough to be a real reminder,
+        // not so late that it lands while they're asleep.
+        var when = DateComponents()
+        when.hour = 19
+        when.minute = 0
+        let trigger = UNCalendarNotificationTrigger(dateMatching: when, repeats: true)
+        center.add(UNNotificationRequest(identifier: "nf.streak",
+                                         content: content, trigger: trigger))
+    }
+
+    /// Cleared whenever the app opens, so the badge always means something.
+    func clearBadge() {
+        UNUserNotificationCenter.current().setBadgeCount(0)
     }
 }
 
