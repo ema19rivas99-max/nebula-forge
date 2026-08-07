@@ -1,6 +1,9 @@
 # Sprite pack recipe (resume from here)
 
-Goal: ship all 10 remaining paid sprite packs for NebulaForge. Each pack is 52
+ALL TEN PACKS SHIPPED (2026-08-07). Kept for the next pack, if there is
+one, and for the lessons below.
+
+Goal was: ship all 10 remaining paid sprite packs for NebulaForge. Each pack is 52
 sprites. The shop auto-reveals a pack once `<prefix>_fire_t0` is in the bundle,
 so **no Swift change is needed** — generate 52, cut, write imagesets, commit.
 
@@ -10,13 +13,13 @@ so **no Swift change is needed** — generate 52, cut, write imagesets, commit.
 - [x] `cyber`   Cyberpunk   (commit 1828e60)
 - [x] `medieval` Medieval   (commit ab9e21a)
 - [x] `fantasy` High Fantasy (commit e1ca801)
-- [ ] `dragon`  Dragonscale
-- [ ] `frost`   Frostbound
-- [ ] `eldritch` Eldritch
-- [ ] `celestial` Celestial
-- [ ] `clockwork` Clockwork
-- [ ] `biolume` Bioluminescent
-- [ ] `vapor`   Vaporwave
+- [x] `dragon`  Dragonscale (commit 747baa4)
+- [x] `frost`   Frostbound (commit 8e24bfe)
+- [x] `eldritch` Eldritch (commit 79ef85a)
+- [x] `celestial` Celestial (commit 190aca9)
+- [x] `clockwork` Clockwork (commit 7b1c913)
+- [x] `biolume` Bioluminescent (commit b0213d0)
+- [x] `vapor`   Vaporwave (commit 06a12f6)
 
 ## Pipeline
 
@@ -43,6 +46,16 @@ Result URLs look like:
 - **Lock the palette per element.** Generic style colour destroys the board's
   at-a-glance element read — the first Cyberpunk pass produced a Fire item
   indistinguishable from a Void one.
+- **Check the hue before spending the rest of the pack.** Generate the first
+  six, then take the median hue of saturated non-white pixels: 0-60 is
+  red/orange, ~180-240 cyan/blue, ~270-300 purple. Frostbound's fire chain
+  measured 9 degrees, which confirmed the palette had taken before the other
+  46 were generated. Cheaper and less subjective than a contact sheet.
+- **Separate material from colour when the style has its own element.**
+  Frostbound would have come out entirely blue if the ice had been the
+  material AND the colour. Carved crystal is the material; the crystal takes
+  the element's hue (amber, amethyst, citrine). Same trick applies to any
+  pack whose theme collides with one of the four elements.
 - **Keep the body bright.** Dark-bodied sprites sink into the dark board.
 - **Generate on plain white**; the cut floods inward from the edges, so white
   *enclosed* inside the artwork is preserved deliberately.
