@@ -2506,7 +2506,18 @@ class IdleEngine: ObservableObject {
     /// reskins — Dragonscale really does change how Fire performs.
     var elementBonus: [Element: Double] = [:]
 
-    private let tickInterval: TimeInterval = 0.1
+    /// Every tick mutates `stardust`, which is `@Published`, which invalidates
+    /// the whole board. At 0.1s that redrew 42 tiles ten times a second for no
+    /// visible benefit — the abbreviated number on screen cannot change that
+    /// fast. Production per tick scales with the interval, so the totals are
+    /// identical either way.
+    private let tickInterval: TimeInterval = 0.25
+
+    /// Per-tile output, recomputed when the board changes rather than on every
+    /// frame. The board used to call `production(for:in:)` for all 42 tiles on
+    /// each redraw, and that call allocates an array of interpolated strings
+    /// for the breakdown notes — which the board doesn't even display.
+    private(set) var tileProduction: [[TileProduction]] = []
 
     /// Called every tick with the stardust produced during that tick.
     var onTick: ((Double) -> Void)?
@@ -2526,12 +2537,35 @@ class IdleEngine: ObservableObject {
 
     func recalculate(from grid: [[GridTile]]) {
         var base = 0.0
+        var cache: [[TileProduction]] = []
+        cache.reserveCapacity(grid.count)
+
         for row in grid {
-            for tile in row where tile.placedItem != nil {
-                base += production(for: tile, in: grid).total
+            var rowCache: [TileProduction] = []
+            rowCache.reserveCapacity(row.count)
+            for tile in row {
+                let output = production(for: tile, in: grid)
+                rowCache.append(output)
+                if tile.placedItem != nil { base += output.total }
             }
+            cache.append(rowCache)
         }
+
+        tileProduction = cache
         totalProductionPerSec = base * permanentMultiplier * upgradeMultiplier
+    }
+
+    /// The cached breakdown for a tile, or a live one if the cache hasn't been
+    /// built yet. Callers that draw every frame must use this.
+    func cachedProduction(row: Int, col: Int, in grid: [[GridTile]]) -> TileProduction {
+        guard tileProduction.indices.contains(row),
+              tileProduction[row].indices.contains(col) else {
+            guard grid.indices.contains(row), grid[row].indices.contains(col) else {
+                return TileProduction(base: 0, selfBonus: 1, neighbourBonus: 1, notes: [])
+            }
+            return production(for: grid[row][col], in: grid)
+        }
+        return tileProduction[row][col]
     }
 
     /// Full breakdown of one tile's output, so the board can show the player
@@ -6458,9 +6492,11 @@ struct GalacticCanvasView: View {
     private func hexTile(row: Int, col: Int) -> some View {
         let tile = gameVM.gridTiles[row][col]
         let position = GridPosition(row: row, col: col)
+        // Cached: this runs for all 42 tiles on every redraw.
         let output = tile.placedItem == nil
             ? 0
-            : gameVM.idleEngine.production(for: tile, in: gameVM.gridTiles).total
+            : gameVM.idleEngine.cachedProduction(row: row, col: col,
+                                                 in: gameVM.gridTiles).total
 
         return HexTileView(
             tile: tile,
