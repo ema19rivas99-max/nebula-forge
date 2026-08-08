@@ -746,6 +746,135 @@ struct PlayerProfile: Codable, Equatable {
     }
 }
 
+// MARK: - Star Chart
+/// A galaxy left behind by one Supernova.
+///
+/// The game is called Cosmic Architect but nothing you built used to survive a
+/// prestige — every reset handed back a multiplier and erased the evidence.
+/// A star records what the burned galaxy actually was, so run twelve looks
+/// different from run three and the map becomes a history of how you played.
+struct Star: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    /// Whichever element produced the most on the board at the moment it burned.
+    var element: Element
+    /// Highest tier standing when it burned. Drives how big the star draws.
+    var magnitude: Int
+    /// Whether a hybrid was on the board. Rarer, drawn with a ring.
+    var isHybrid: Bool
+    var marks: Int
+    /// Normalised 0...1 so the chart survives any screen size.
+    var x: Double
+    var y: Double
+    var createdAt: Date = Date()
+}
+
+/// A group of stars close enough to be linked.
+struct Constellation {
+    var stars: [Star]
+
+    var size: Int { stars.count }
+    var elements: Set<Element> { Set(stars.map(\.element)) }
+    /// Every star the same element. Drives the specialist rewards.
+    var pureElement: Element? { elements.count == 1 ? elements.first : nil }
+}
+
+enum StarChart {
+    /// Stars within this normalised distance of each other are linked. Roughly
+    /// a fifth of the map, so a constellation is a deliberate cluster rather
+    /// than an accident of dropping stars anywhere.
+    static let linkDistance: Double = 0.18
+
+    /// Total stars a chart can hold. Placement stops meaning anything once the
+    /// map is a solid field of stars, and the passive bonus is capped anyway.
+    static let capacity = 60
+
+    static func distance(_ a: Star, _ b: Star) -> Double {
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
+    /// Connected components under `linkDistance` — a flood fill, so a chain of
+    /// stars each near the next counts as one constellation even when the ends
+    /// are far apart. That's deliberate: it rewards drawing a shape.
+    static func constellations(from stars: [Star]) -> [Constellation] {
+        var unvisited = stars
+        var found: [Constellation] = []
+
+        while let seed = unvisited.first {
+            unvisited.removeFirst()
+            var group = [seed]
+            var frontier = [seed]
+
+            while let current = frontier.popLast() {
+                let (near, far) = unvisited.reduce(into: ([Star](), [Star]())) { acc, star in
+                    if distance(current, star) <= linkDistance {
+                        acc.0.append(star)
+                    } else {
+                        acc.1.append(star)
+                    }
+                }
+                group.append(contentsOf: near)
+                frontier.append(contentsOf: near)
+                unvisited = far
+            }
+            // A lone star is not a constellation; it earns nothing until linked.
+            if group.count > 1 { found.append(Constellation(stars: group)) }
+        }
+        return found
+    }
+}
+
+/// Permanent perks earned by the shape of the chart rather than by spending.
+///
+/// Each one wires into a multiplier the game already had, which is what keeps
+/// this from becoming a second economy that has to be balanced from scratch.
+enum ChartAbility: String, CaseIterable, Identifiable {
+    case beacon, nursery, convergence, ascendant
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .beacon: return "Beacon"
+        case .nursery: return "Stellar Nursery"
+        case .convergence: return "Convergence"
+        case .ascendant: return "Ascendant"
+        }
+    }
+
+    var requirement: String {
+        switch self {
+        case .beacon: return "Link 5 stars"
+        case .nursery: return "A constellation of 4 sharing one element"
+        case .convergence: return "A constellation spanning 3 elements"
+        case .ascendant: return "Place 20 stars"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .beacon: return "Comets linger 50% longer"
+        case .nursery: return "Start each galaxy with an extra item"
+        case .convergence: return "+30% Shards from fusions"
+        case .ascendant: return "Every Supernova grants one extra Mark"
+        }
+    }
+
+    func isEarned(stars: [Star], constellations: [Constellation]) -> Bool {
+        switch self {
+        case .beacon:
+            return constellations.contains { $0.size >= 5 }
+        case .nursery:
+            return constellations.contains { $0.size >= 4 && $0.pureElement != nil }
+        case .convergence:
+            return constellations.contains { $0.elements.count >= 3 }
+        case .ascendant:
+            return stars.count >= 20
+        }
+    }
+}
+
 // MARK: - Remote config
 /// Values the game can be re-tuned with after it ships.
 ///
@@ -1939,6 +2068,28 @@ enum GoalCatalog {
         Goal(id: "skins_3", title: "Wardrobe", detail: "Own 3 sprite skins",
              target: 3, shardReward: 800, gemReward: 60,
              category: .habit) { $0.ownedSkinIDs.count },
+
+        // Star Chart. These sit in .prestige because every one of them is
+        // downstream of a Supernova.
+        Goal(id: "stars_1", title: "First Light", detail: "Place your first star",
+             target: 1, shardReward: 100, gemReward: 10,
+             category: .prestige) { $0.stars.count },
+        Goal(id: "stars_5", title: "Scattered Light", detail: "Place 5 stars",
+             target: 5, shardReward: 400, gemReward: 25,
+             category: .prestige) { $0.stars.count },
+        Goal(id: "stars_20", title: "Cosmic Architect", detail: "Place 20 stars",
+             target: 20, shardReward: 2000, gemReward: 90,
+             category: .prestige) { $0.stars.count },
+        Goal(id: "constellation_1", title: "Drawn Together", detail: "Form a constellation",
+             target: 1, shardReward: 250, gemReward: 20,
+             category: .prestige) { $0.constellations.count },
+        Goal(id: "constellation_4", title: "Star Cartographer", detail: "Form 4 constellations",
+             target: 4, shardReward: 1200, gemReward: 70,
+             category: .prestige) { $0.constellations.count },
+        Goal(id: "abilities_all", title: "The Whole Sky",
+             detail: "Earn every Star Chart ability",
+             target: ChartAbility.allCases.count, shardReward: 4000, gemReward: 200,
+             category: .prestige) { $0.earnedAbilities.count },
     ]
 
     static func inCategory(_ category: Goal.Category) -> [Goal] {
@@ -2536,6 +2687,8 @@ class GameViewModel: ObservableObject {
     /// Starlight Array levels. Unlike `upgradeLevels` these are per-run and the
     /// Supernova clears them.
     @Published var starlightLevels: [String: Int] = [:]
+    /// The permanent chart. Nothing ever removes a star.
+    @Published var stars: [Star] = []
     /// Stardust earned while the app was closed, surfaced once on launch.
     @Published var pendingOfflineEarnings: Double = 0
     /// Transient banner text describing the most recent merge.
@@ -2884,6 +3037,7 @@ class GameViewModel: ObservableObject {
         static let claimedGoalIDs = "nf.claimedGoalIDs"
         static let upgradeLevels = "nf.upgradeLevels"
         static let starlightLevels = "nf.starlightLevels"
+        static let stars = "nf.stars"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
         static let dailyStreak = "nf.dailyStreak"
@@ -2980,7 +3134,7 @@ class GameViewModel: ObservableObject {
         // still means something in the first few minutes of a run.
         let payout = max(25, idleEngine.totalProductionPerSec * 90) * activeEffect.cometValue
         comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
-                      lifetime: Self.cometLifetime, stardust: payout, shards: 3)
+                      lifetime: cometLifetime, stardust: payout, shards: 3)
         Feedback.place()
     }
 
@@ -3187,8 +3341,9 @@ class GameViewModel: ObservableObject {
         let base = Double(max(1, merged.tier * 2) * shardYieldMultiplier * fusionBonus)
         // Fusion sets multiply fusions specifically, on top of the general
         // shard bonus — which is what makes High Fantasy a fusion build.
+        let convergence = (isFusion && hasAbility(.convergence)) ? 1.3 : 1
         let scaled = base * cosmetics.shards * (isFusion ? cosmetics.fusionShards : 1)
-            * starlightBonus("cascade") * eventShardMultiplier
+            * starlightBonus("cascade") * eventShardMultiplier * convergence
         let shardsGained = max(1, Int(scaled.rounded()))
         starlightShards += shardsGained
         totalMerges += 1
@@ -3307,12 +3462,79 @@ class GameViewModel: ObservableObject {
 
     /// Extra items granted when a run begins.
     var bonusStartingItems: Int {
-        upgradeLevel("starting_items")
+        upgradeLevel("starting_items") + (hasAbility(.nursery) ? 1 : 0)
+    }
+
+    /// How long a comet stays catchable. Beacon is the only thing that moves it.
+    var cometLifetime: TimeInterval {
+        Self.cometLifetime * (hasAbility(.beacon) ? 1.5 : 1)
     }
 
     var offlineCapHours: Double {
         baseOfflineHours + 2 * Double(upgradeLevel("offline")) + purchaseOfflineHours
             + activeEffect.offlineHours
+    }
+
+    // MARK: Star Chart
+
+    var constellations: [Constellation] { StarChart.constellations(from: stars) }
+
+    var earnedAbilities: [ChartAbility] {
+        let groups = constellations
+        return ChartAbility.allCases.filter { $0.isEarned(stars: stars, constellations: groups) }
+    }
+
+    func hasAbility(_ ability: ChartAbility) -> Bool {
+        ability.isEarned(stars: stars, constellations: constellations)
+    }
+
+    /// The passive tier: +2% production per linked star beyond the first in each
+    /// constellation, plus a bonus for keeping one all the same element.
+    ///
+    /// Hard-capped. This stacks on top of Galaxy Marks, the Array and cosmetics,
+    /// and an uncapped fifth multiplier on a chart that only ever grows is how
+    /// an idle game's curve stops meaning anything.
+    var chartProductionMultiplier: Double {
+        let raw = constellations.reduce(0.0) { total, group in
+            let linked = Double(group.size - 1) * 0.02
+            let pure = group.pureElement != nil ? 0.05 : 0
+            return total + linked + pure
+        }
+        return 1 + min(raw, 0.75)
+    }
+
+    /// Star minted from the galaxy being burned. Reads the board rather than
+    /// tracking counters all run, so it always describes what actually stood
+    /// there at the end.
+    private func mintStar(marks: Int) -> Star? {
+        let placed = placedEntries.map(\.item)
+        guard !placed.isEmpty else { return nil }
+
+        var byElement: [Element: Double] = [:]
+        for item in placed {
+            byElement[item.element, default: 0] += item.baseProduction
+        }
+        let dominant = byElement.max { $0.value < $1.value }?.key ?? .fire
+
+        return Star(
+            element: dominant,
+            magnitude: placed.map(\.tier).max() ?? 0,
+            isHybrid: placed.contains { ItemCatalog.chain(for: $0.chainID)?.isHybrid == true },
+            marks: marks,
+            // Dropped near the middle with a little scatter so two stars never
+            // land exactly on top of each other; the player drags it anywhere.
+            x: Double.random(in: 0.35...0.65),
+            y: Double.random(in: 0.35...0.65))
+    }
+
+    @discardableResult
+    func moveStar(_ id: UUID, toX x: Double, y: Double) -> Bool {
+        guard let index = stars.firstIndex(where: { $0.id == id }) else { return false }
+        stars[index].x = min(max(x, 0), 1)
+        stars[index].y = min(max(y, 0), 1)
+        syncUpgradeEffects()
+        saveGameState()
+        return true
     }
 
     // MARK: Starlight Array
@@ -3384,6 +3606,7 @@ class GameViewModel: ObservableObject {
         idleEngine.upgradeMultiplier =
             upgradeProductionMultiplier * purchaseMultiplier * surgeMultiplier
             * cosmetics.production * starlightBonus("lens") * eventProductionMultiplier
+            * chartProductionMultiplier
         idleEngine.elementBonus = cosmetics.elementBonus
         idleEngine.recalculate(from: gridTiles)
     }
@@ -3467,7 +3690,7 @@ class GameViewModel: ObservableObject {
             guard comet == nil, let tile = freeUnlockedTiles.randomElement() else { return false }
             let payout = max(25, idleEngine.totalProductionPerSec * 90) * activeEffect.cometValue
             comet = Comet(row: tile.row, col: tile.col, spawnedAt: Date(),
-                          lifetime: Self.cometLifetime, stardust: payout, shards: 3)
+                          lifetime: cometLifetime, stardust: payout, shards: 3)
         case "surge":
             // Extends rather than replaces, so buying two isn't a waste.
             extendSurge(minutes: 30)
@@ -3736,8 +3959,16 @@ class GameViewModel: ObservableObject {
     func triggerSupernova() -> Bool {
         guard canPrestige else { return false }
 
-        let earnedMarks = potentialMarks
+        // Ascendant is read before the new star is added, so the extra Mark is
+        // something the existing chart earned rather than something this very
+        // Supernova can grant itself.
+        let earnedMarks = potentialMarks + (hasAbility(.ascendant) ? 1 : 0)
         galaxyMarks += earnedMarks
+
+        // Mint from the board while it still stands — initializeBoard clears it.
+        if stars.count < StarChart.capacity, let star = mintStar(marks: earnedMarks) {
+            stars.append(star)
+        }
         prestigeCount += 1
         todayPrestiges += 1
 
@@ -3807,6 +4038,12 @@ class GameViewModel: ObservableObject {
         defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
         defaults.set(upgradeLevels, forKey: DefaultsKey.upgradeLevels)
         defaults.set(starlightLevels, forKey: DefaultsKey.starlightLevels)
+        // The chart is the one thing here that can never be re-earned, so it is
+        // encoded defensively: a failure writes nothing rather than an empty
+        // array over a real chart.
+        if let encodedStars = try? JSONEncoder().encode(stars) {
+            defaults.set(encodedStars, forKey: DefaultsKey.stars)
+        }
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
         defaults.set(dailyStreak, forKey: DefaultsKey.dailyStreak)
         if let lastDailyClaim {
@@ -3934,6 +4171,7 @@ class GameViewModel: ObservableObject {
             claimedGoalIDs: Array(claimedGoalIDs),
             upgradeLevels: upgradeLevels,
             starlightLevels: starlightLevels,
+            stars: stars,
             unlockedTiles: gridTiles.flatMap { $0 }.filter(\.isUnlocked).map { "\($0.row),\($0.col)" },
             dailyStreak: dailyStreak,
             lastDailyClaim: lastDailyClaim,
@@ -3967,6 +4205,19 @@ class GameViewModel: ObservableObject {
         claimedGoalIDs = Set(snapshot.claimedGoalIDs)
         upgradeLevels = snapshot.upgradeLevels
         starlightLevels = snapshot.starlightLevels ?? [:]
+
+        // Stars merge rather than replace. Everything else here is either
+        // re-earnable or a running total, but a star is minted once by a
+        // Supernova that already happened — if two devices each prestiged while
+        // offline, taking one snapshot wholesale would destroy the other's
+        // history permanently. Union by id, newest first, capped.
+        if let incoming = snapshot.stars {
+            var merged = stars
+            let known = Set(stars.map(\.id))
+            merged.append(contentsOf: incoming.filter { !known.contains($0.id) })
+            stars = Array(merged.sorted { $0.createdAt < $1.createdAt }
+                .prefix(StarChart.capacity))
+        }
         dailyStreak = snapshot.dailyStreak
         lastDailyClaim = snapshot.lastDailyClaim
         hasMadeFirstPurchase = snapshot.hasMadeFirstPurchase
@@ -4045,6 +4296,10 @@ class GameViewModel: ObservableObject {
         claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
         upgradeLevels = defaults.dictionary(forKey: DefaultsKey.upgradeLevels) as? [String: Int] ?? [:]
         starlightLevels = defaults.dictionary(forKey: DefaultsKey.starlightLevels) as? [String: Int] ?? [:]
+        if let starData = defaults.data(forKey: DefaultsKey.stars),
+           let decodedStars = try? JSONDecoder().decode([Star].self, from: starData) {
+            stars = decodedStars
+        }
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
         dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
         lastDailyClaim = defaults.object(forKey: DefaultsKey.lastDailyClaim) as? Date
@@ -4368,6 +4623,159 @@ struct StarlightRow: View {
         .padding()
         .background(.ultraThinMaterial)
         .cornerRadius(12)
+    }
+}
+
+// MARK: - Star Chart View
+/// The permanent map. Drag stars together to form constellations.
+struct StarChartView: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var dragging: UUID?
+    @State private var dragPoint: CGPoint = .zero
+
+    private var constellations: [Constellation] { gameVM.constellations }
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                CosmicBackground(theme: gameVM.theme)
+
+                VStack(spacing: 10) {
+                    summary
+
+                    GeometryReader { geo in
+                        ZStack {
+                            links(in: geo.size)
+                            ForEach(gameVM.stars) { star in
+                                starView(star, in: geo.size)
+                            }
+
+                            if gameVM.stars.isEmpty {
+                                Text("Trigger a Supernova and the galaxy you burned becomes a star here.")
+                                    .font(.caption)
+                                    .multilineTextAlignment(.center)
+                                    .foregroundColor(.white.opacity(0.6))
+                                    .padding(40)
+                            }
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .contentShape(Rectangle())
+                    }
+                    .background(Color.white.opacity(0.03))
+                    .cornerRadius(16)
+                    .padding(.horizontal)
+
+                    abilityList
+                }
+                .padding(.vertical)
+            }
+            .navigationTitle("Star Chart")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var summary: some View {
+        HStack(spacing: 16) {
+            stat("\(gameVM.stars.count)", "Stars")
+            stat("\(constellations.count)", "Constellations")
+            stat("+\(Int(((gameVM.chartProductionMultiplier - 1) * 100).rounded()))%", "Production")
+        }
+        .padding(.horizontal)
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(.headline).foregroundColor(.white)
+            Text(label).font(.caption2).foregroundColor(.white.opacity(0.6))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .cornerRadius(10)
+    }
+
+    /// Lines between linked stars, so a constellation reads as one shape rather
+    /// than as stars that happen to sit near each other.
+    private func links(in size: CGSize) -> some View {
+        Path { path in
+            for group in constellations {
+                for (index, star) in group.stars.enumerated() {
+                    for other in group.stars.dropFirst(index + 1)
+                    where StarChart.distance(star, other) <= StarChart.linkDistance {
+                        path.move(to: CGPoint(x: star.x * size.width, y: star.y * size.height))
+                        path.addLine(to: CGPoint(x: other.x * size.width, y: other.y * size.height))
+                    }
+                }
+            }
+        }
+        .stroke(Color.white.opacity(0.25), lineWidth: 1)
+    }
+
+    private func starView(_ star: Star, in size: CGSize) -> some View {
+        // Magnitude drives the radius, so a chart of deep runs looks different
+        // from a chart of shallow ones at a glance.
+        let diameter = 10 + CGFloat(min(star.magnitude, 8)) * 2.5
+        let position = dragging == star.id
+            ? dragPoint
+            : CGPoint(x: star.x * size.width, y: star.y * size.height)
+
+        return ZStack {
+            Circle()
+                .fill(star.element.tint)
+                .frame(width: diameter, height: diameter)
+                .shadow(color: star.element.tint.opacity(0.8), radius: 6)
+            if star.isHybrid {
+                Circle()
+                    .stroke(Color.white.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: diameter + 7, height: diameter + 7)
+            }
+        }
+        .position(position)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    dragging = star.id
+                    dragPoint = value.location
+                }
+                .onEnded { value in
+                    gameVM.moveStar(star.id,
+                                    toX: value.location.x / size.width,
+                                    y: value.location.y / size.height)
+                    dragging = nil
+                }
+        )
+    }
+
+    private var abilityList: some View {
+        VStack(spacing: 6) {
+            ForEach(ChartAbility.allCases) { ability in
+                let earned = gameVM.hasAbility(ability)
+                HStack(spacing: 10) {
+                    Image(systemName: earned ? "checkmark.seal.fill" : "lock.fill")
+                        .foregroundColor(earned ? .green : .white.opacity(0.35))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ability.title)
+                            .font(.caption.bold())
+                            .foregroundColor(.white)
+                        Text(earned ? ability.detail : ability.requirement)
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.65))
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .cornerRadius(10)
+            }
+        }
+        .padding(.horizontal)
     }
 }
 
@@ -6166,6 +6574,7 @@ struct PrestigeView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @State private var showConfirmation = false
     @State private var supernovaAnimation = false
+    @State private var showChart = false
 
     private var potentialMarks: Int { gameVM.potentialMarks }
     private var power: Double { gameVM.prestigePower }
@@ -6246,6 +6655,37 @@ struct PrestigeView: View {
 
                         Divider().background(Color.white.opacity(0.3))
 
+                        // Sits directly under the Supernova button because this
+                        // is what a Supernova now leaves behind.
+                        Button {
+                            showChart = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "sparkles")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Star Chart")
+                                        .font(.subheadline.bold())
+                                    Text(gameVM.stars.isEmpty
+                                         ? "Empty — your first Supernova fills it"
+                                         : "\(gameVM.stars.count) stars · \(gameVM.constellations.count) constellations")
+                                        .font(.caption2)
+                                        .foregroundColor(.white.opacity(0.7))
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                            .foregroundColor(.white)
+                            .padding()
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+
+                        Divider().background(Color.white.opacity(0.3))
+
                         // The Array sits above the permanent upgrades because
                         // it's what shards are for, and this is the screen that
                         // already explains what a Supernova takes away.
@@ -6295,6 +6735,9 @@ struct PrestigeView: View {
                     }
                     .padding(.vertical)
                 }
+            }
+            .sheet(isPresented: $showChart) {
+                StarChartView().environmentObject(gameVM)
             }
             .alert("Confirm Supernova", isPresented: $showConfirmation) {
                 Button("Cancel", role: .cancel) { }
@@ -6909,6 +7352,9 @@ struct SaveSnapshot: Codable {
     /// Optional so saves written before the Starlight Array existed still
     /// decode — a missing non-optional key fails the whole snapshot.
     var starlightLevels: [String: Int]?
+    /// Likewise optional, and restored additively rather than by replacement —
+    /// see `restore(from:)`.
+    var stars: [Star]?
     var unlockedTiles: [String]
     var dailyStreak: Int
     var lastDailyClaim: Date?

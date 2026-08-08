@@ -369,6 +369,82 @@ final class EconomyTests: XCTestCase {
         XCTAssertEqual(DailyQuestCatalog.deal(from: starved).count, 3)
     }
 
+    // MARK: - Star Chart
+
+    private func star(_ x: Double, _ y: Double,
+                      _ element: Element = .fire, magnitude: Int = 3) -> Star {
+        Star(element: element, magnitude: magnitude, isHybrid: false,
+             marks: 1, x: x, y: y)
+    }
+
+    func testLoneStarsFormNoConstellation() {
+        let far = [star(0.05, 0.05), star(0.95, 0.95)]
+        XCTAssertTrue(StarChart.constellations(from: far).isEmpty,
+                      "unlinked stars must not pay out")
+        XCTAssertTrue(StarChart.constellations(from: []).isEmpty)
+    }
+
+    func testNearbyStarsLink() {
+        let pair = [star(0.50, 0.50), star(0.55, 0.50)]
+        let groups = StarChart.constellations(from: pair)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.size, 2)
+    }
+
+    func testAChainOfStarsIsOneConstellation() {
+        // Each star is within link distance of the next but the ends are far
+        // apart. Drawing a line must count as one shape, not three pairs.
+        let chain = (0..<5).map { star(0.1 + Double($0) * 0.15, 0.5) }
+        let groups = StarChart.constellations(from: chain)
+        XCTAssertEqual(groups.count, 1, "a chain split into separate groups")
+        XCTAssertEqual(groups.first?.size, 5)
+    }
+
+    func testEveryStarLandsInExactlyOneConstellation() {
+        let stars = (0..<12).map { i in
+            star(Double(i % 4) * 0.1 + 0.2, Double(i / 4) * 0.1 + 0.2)
+        }
+        let groups = StarChart.constellations(from: stars)
+        let counted = groups.reduce(0) { $0 + $1.size }
+        let ids = Set(groups.flatMap { $0.stars.map(\.id) })
+        XCTAssertEqual(counted, ids.count, "a star was counted in two constellations")
+        XCTAssertLessThanOrEqual(counted, stars.count)
+    }
+
+    func testPureElementDetection() {
+        let pure = Constellation(stars: [star(0, 0, .ice), star(0, 0, .ice)])
+        XCTAssertEqual(pure.pureElement, .ice)
+        let mixed = Constellation(stars: [star(0, 0, .ice), star(0, 0, .fire)])
+        XCTAssertNil(mixed.pureElement)
+        XCTAssertEqual(mixed.elements.count, 2)
+    }
+
+    func testAbilitiesNeedTheirActualShape() {
+        let fourIce = (0..<4).map { star(0.4 + Double($0) * 0.03, 0.5, .ice) }
+        let groups = StarChart.constellations(from: fourIce)
+
+        XCTAssertTrue(ChartAbility.nursery.isEarned(stars: fourIce, constellations: groups))
+        XCTAssertFalse(ChartAbility.beacon.isEarned(stars: fourIce, constellations: groups),
+                       "Beacon needs five linked, not four")
+        XCTAssertFalse(ChartAbility.convergence.isEarned(stars: fourIce, constellations: groups),
+                       "one element cannot span three")
+        XCTAssertFalse(ChartAbility.ascendant.isEarned(stars: fourIce, constellations: groups))
+    }
+
+    func testConvergenceNeedsThreeElementsInOneGroup() {
+        // Three elements present overall, but in two separate constellations.
+        let split = [star(0.1, 0.1, .fire), star(0.13, 0.1, .ice),
+                     star(0.9, 0.9, .void), star(0.93, 0.9, .void)]
+        let groups = StarChart.constellations(from: split)
+        XCTAssertFalse(ChartAbility.convergence.isEarned(stars: split, constellations: groups),
+                       "elements must meet in the same constellation")
+    }
+
+    func testChartCapacityIsFinite() {
+        XCTAssertGreaterThan(StarChart.capacity, 20,
+                             "capacity must outlast the 20-star Ascendant goal")
+    }
+
     // MARK: - Remote config
 
     func testOutOfRangeRemoteValuesAreDroppedNotClamped() {
