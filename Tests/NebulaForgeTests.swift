@@ -369,6 +369,88 @@ final class EconomyTests: XCTestCase {
         XCTAssertEqual(DailyQuestCatalog.deal(from: starved).count, 3)
     }
 
+    // MARK: - Remote config
+
+    func testOutOfRangeRemoteValuesAreDroppedNotClamped() {
+        // A typo in the published JSON must fall back to the shipped constant.
+        // Clamping to the boundary would silently ship the most extreme legal
+        // balance instead, which is worse than ignoring the value.
+        var config = RemoteConfig()
+        config.forgeCostGrowth = 900
+        config.prestigePowerRequirement = -5
+        config.arrayCostMultiplier = 0
+
+        let clean = config.sanitized
+        XCTAssertNil(clean.forgeCostGrowth)
+        XCTAssertNil(clean.prestigePowerRequirement)
+        XCTAssertNil(clean.arrayCostMultiplier)
+    }
+
+    func testInRangeRemoteValuesSurvive() {
+        var config = RemoteConfig()
+        config.forgeCostGrowth = 1.08
+        config.arrayCostMultiplier = 0.5
+
+        let clean = config.sanitized
+        XCTAssertEqual(clean.forgeCostGrowth, 1.08)
+        XCTAssertEqual(clean.arrayCostMultiplier, 0.5)
+    }
+
+    func testNonFiniteRemoteValuesAreRejected() {
+        var config = RemoteConfig()
+        config.forgeCostGrowth = .nan
+        config.arrayCostMultiplier = .infinity
+        let clean = config.sanitized
+        XCTAssertNil(clean.forgeCostGrowth)
+        XCTAssertNil(clean.arrayCostMultiplier)
+    }
+
+    func testEventOnlyAppliesInsideItsWindow() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let event = RemoteConfig.Event(name: "Surge", production: 2, shards: nil,
+                                       startsAt: start,
+                                       endsAt: start.addingTimeInterval(86_400))
+
+        XCTAssertFalse(event.isActive(at: start.addingTimeInterval(-1)), "started early")
+        XCTAssertTrue(event.isActive(at: start.addingTimeInterval(3600)))
+        XCTAssertFalse(event.isActive(at: start.addingTimeInterval(86_401)), "outlived its window")
+    }
+
+    func testEventWithNoMultipliersIsInert() {
+        let event = RemoteConfig.Event(name: "Empty", production: nil, shards: nil,
+                                       startsAt: nil, endsAt: nil)
+        XCTAssertFalse(event.isActive(), "an event granting nothing must not show a banner")
+    }
+
+    func testOversizedEventMultiplierIsRejected() {
+        var config = RemoteConfig()
+        config.event = RemoteConfig.Event(name: "Runaway", production: 1000, shards: nil,
+                                          startsAt: nil, endsAt: nil)
+        XCTAssertFalse(config.sanitized.event?.isActive() ?? false,
+                       "a runaway multiplier must not reach the economy")
+    }
+
+    func testNoticeNeedsBodyAndRespectsExpiry() {
+        let past = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(RemoteConfig.Notice(id: "a", body: nil, endsAt: nil).isActive())
+        XCTAssertFalse(RemoteConfig.Notice(id: "a", body: "", endsAt: nil).isActive())
+        XCTAssertFalse(RemoteConfig.Notice(id: "a", body: "hi", endsAt: past).isActive())
+        XCTAssertTrue(RemoteConfig.Notice(id: "a", body: "hi", endsAt: nil).isActive())
+    }
+
+    func testShippedConfigFileIsInert() throws {
+        // The published file must decode to no overrides, so shipping it can't
+        // change the balance until someone deliberately edits it.
+        let json = """
+        {"_readme": "notes", "_example": {"event": {"name": "x", "production": 2}}}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let config = try decoder.decode(RemoteConfig.self, from: Data(json.utf8))
+        XCTAssertNil(config.event, "underscore-prefixed keys must not take effect")
+        XCTAssertNil(config.forgeCostGrowth)
+    }
+
     func testDailyQuestsAreStableWithinADayAndRotateAcross() {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let sameDay = day.addingTimeInterval(3600)

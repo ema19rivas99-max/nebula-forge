@@ -1,0 +1,28 @@
+{
+  "_readme": "Live settings for Nebula Forge. Edit, commit to main, and GitHub Pages serves it within a minute or two; the app picks it up at next launch or foreground. Every key is optional — delete one and the app falls back to the value it shipped with. Values outside the ranges below are rejected by the client, not clamped, so a typo means 'use the built-in value' rather than 'use the boundary'.",
+
+  "_forgeCostGrowth": "Optional. 1.02-1.5. Ships as 1.12. How fast forging gets more expensive within a run. Lower = longer runs.",
+
+  "_prestigePowerRequirement": "Optional. 1-100000. Ships as 12. Galaxy Power needed before a Supernova is allowed.",
+
+  "_arrayCostMultiplier": "Optional. 0.25-4. Ships as 1. Scales every Starlight Array price. Below 1 is a sale.",
+
+  "_event": "Optional. Multipliers applied while inside the window. production and shards are each 1-5. Omit startsAt to begin immediately; omit endsAt to never expire. Dates are ISO-8601 with an offset, e.g. 2026-08-15T00:00:00Z. An event with neither multiplier is ignored.",
+
+  "_notice": "Optional. A line of text under the banners. body is capped at 140 characters. Omit endsAt to show it indefinitely.",
+
+  "_example": {
+    "event": {
+      "name": "Nebula Surge",
+      "production": 2,
+      "shards": 1.5,
+      "startsAt": "2026-08-15T00:00:00Z",
+      "endsAt": "2026-08-18T00:00:00Z"
+    },
+    "notice": {
+      "id": "welcome-1",
+      "body": "Thanks for playing the launch build.",
+      "endsAt": "2026-09-01T00:00:00Z"
+    }
+  }
+}

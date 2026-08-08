@@ -33,6 +33,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // Initialize Game Center
         authenticateGameCenterPlayer()
 
+        // Pull live balance and event settings. Fire-and-forget: nothing waits
+        // on it and nothing breaks if it never answers.
+        RemoteConfigManager.shared.refresh()
+
         // Warm the players for the effects that fire soonest, so the first
         // merge of a session isn't the one that stutters.
         HapticManager.shared.prepare()
@@ -186,6 +190,8 @@ struct PrivacyPolicyView: View {
                         Text("3. Third-Party Services")
                             .font(.headline)
                         Text("We use Apple's Game Center for optional leaderboards. This game contains no advertising, no analytics, and no third-party trackers, and does not track you across apps or websites.")
+
+                        Text("The game downloads a small settings file from our own website so events and balance can be updated without an app update. That request sends no information about you or your device beyond what any web request requires, and nothing is stored about it.")
 
                         Text("4. Your Rights")
                             .font(.headline)
@@ -737,6 +743,153 @@ struct PlayerProfile: Codable, Equatable {
     var displayName: String {
         let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Anonymous Architect" : trimmed
+    }
+}
+
+// MARK: - Remote config
+/// Values the game can be re-tuned with after it ships.
+///
+/// Everything the balance rests on used to be a compile-time constant, so
+/// moving a single number cost an App Store review — days to change a
+/// coefficient, and no way to run a weekend event at all. This fetches an
+/// override at launch from the project's own GitHub Pages site.
+///
+/// Three rules, all of them load-bearing:
+///   * Every field is optional and every failure is silent. No network, bad
+///     JSON, a 404 — the game uses its built-in values and the player never
+///     learns anything was attempted.
+///   * Every value is clamped on the way in. A typo in the JSON must not be
+///     able to brick a save or hand out infinite currency.
+///   * The request carries nothing. A plain GET with no query, no identifier,
+///     no body — this is not analytics and must never quietly become it.
+struct RemoteConfig: Codable, Equatable {
+    struct Event: Codable, Equatable {
+        var name: String?
+        var production: Double?
+        var shards: Double?
+        var startsAt: Date?
+        var endsAt: Date?
+
+        /// Live only inside its window. A window with no end never expires,
+        /// which is deliberate — it's how a permanent rebalance ships.
+        func isActive(at now: Date = Date()) -> Bool {
+            if let startsAt, now < startsAt { return false }
+            if let endsAt, now > endsAt { return false }
+            return production != nil || shards != nil
+        }
+    }
+
+    struct Notice: Codable, Equatable {
+        var id: String?
+        var body: String?
+        var endsAt: Date?
+
+        func isActive(at now: Date = Date()) -> Bool {
+            guard let body, !body.isEmpty else { return false }
+            if let endsAt, now > endsAt { return false }
+            return true
+        }
+    }
+
+    var forgeCostGrowth: Double?
+    var prestigePowerRequirement: Double?
+    var arrayCostMultiplier: Double?
+    var event: Event?
+    var notice: Notice?
+
+    static let empty = RemoteConfig()
+
+    /// Clamps every field to a range the game is known to survive. Anything
+    /// outside it is dropped rather than corrected, so a nonsense value falls
+    /// back to the shipped constant instead of silently becoming a boundary.
+    var sanitized: RemoteConfig {
+        func clamp(_ value: Double?, _ range: ClosedRange<Double>) -> Double? {
+            guard let value, value.isFinite, range.contains(value) else { return nil }
+            return value
+        }
+
+        var out = RemoteConfig()
+        out.forgeCostGrowth = clamp(forgeCostGrowth, 1.02...1.5)
+        out.prestigePowerRequirement = clamp(prestigePowerRequirement, 1...100_000)
+        out.arrayCostMultiplier = clamp(arrayCostMultiplier, 0.25...4)
+
+        if let event {
+            var checked = Event(name: event.name.map { String($0.prefix(40)) },
+                                production: clamp(event.production, 1...5),
+                                shards: clamp(event.shards, 1...5),
+                                startsAt: event.startsAt,
+                                endsAt: event.endsAt)
+            if checked.production == nil && checked.shards == nil { checked = Event() }
+            out.event = checked
+        }
+
+        if let notice {
+            out.notice = Notice(id: notice.id.map { String($0.prefix(64)) },
+                                body: notice.body.map { String($0.prefix(140)) },
+                                endsAt: notice.endsAt)
+        }
+        return out
+    }
+}
+
+/// Fetches and caches `RemoteConfig`.
+///
+/// The last good copy is kept on disk, so a player who opens the app offline
+/// during an event still gets the event.
+final class RemoteConfigManager: ObservableObject {
+    static let shared = RemoteConfigManager()
+
+    private static let url = URL(string: "https://ema19rivas99-max.github.io/nebula-forge/config.json")!
+    private static let cacheKey = "nf.remoteConfig"
+
+    @Published private(set) var config: RemoteConfig = .empty
+
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: Self.cacheKey),
+           let cached = try? Self.decoder.decode(RemoteConfig.self, from: data) {
+            config = cached.sanitized
+        }
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    /// Must match `decoder`. The defaults don't — `JSONEncoder` writes dates as
+    /// seconds since 2001 while the decoder expects ISO-8601, so a cached
+    /// config would fail to read back and every launch would look like a
+    /// cache miss.
+    private static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+
+    func refresh() {
+        var request = URLRequest(url: Self.url)
+        request.timeoutInterval = 10
+        request.httpMethod = "GET"
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self,
+                  let data,
+                  let http = response as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let fetched = try? Self.decoder.decode(RemoteConfig.self, from: data)
+            else { return }
+
+            let clean = fetched.sanitized
+            DispatchQueue.main.async {
+                self.config = clean
+                // Cache the sanitized copy, not the raw one, so a value that was
+                // rejected today can't come back through the cache tomorrow.
+                if let encoded = try? Self.encoder.encode(clean) {
+                    UserDefaults.standard.set(encoded, forKey: Self.cacheKey)
+                }
+            }
+        }.resume()
     }
 }
 
@@ -2655,7 +2808,26 @@ class GameViewModel: ObservableObject {
     /// but gently enough that production keeps up. At the old 1.18 the price
     /// doubled every four forges and outran output within one session.
     var forgeItemCost: Double {
-        25 * pow(1.12, Double(itemsForged)) * forgeCostFactor * activeEffect.forgeCost
+        let growth = RemoteConfigManager.shared.config.forgeCostGrowth ?? 1.12
+        return 25 * pow(growth, Double(itemsForged)) * forgeCostFactor * activeEffect.forgeCost
+    }
+
+    // MARK: Remote-tunable values
+
+    /// The live event's multipliers, or 1 when nothing is running.
+    var eventProductionMultiplier: Double {
+        guard let event = RemoteConfigManager.shared.config.event, event.isActive() else { return 1 }
+        return event.production ?? 1
+    }
+
+    var eventShardMultiplier: Double {
+        guard let event = RemoteConfigManager.shared.config.event, event.isActive() else { return 1 }
+        return event.shards ?? 1
+    }
+
+    var activeEventName: String? {
+        guard let event = RemoteConfigManager.shared.config.event, event.isActive() else { return nil }
+        return event.name
     }
 
     /// Minimum built-up power before a Supernova is allowed.
@@ -2664,7 +2836,12 @@ class GameViewModel: ObservableObject {
     /// scraps paid exactly as much as ten fully evolved ones — merging deep was
     /// strictly worse than spamming Forge. Power is the sum of what's actually
     /// on the board, so depth is what pays.
-    static let prestigePowerRequirement: Double = 12
+    static let defaultPrestigePowerRequirement: Double = 12
+
+    static var prestigePowerRequirement: Double {
+        RemoteConfigManager.shared.config.prestigePowerRequirement
+            ?? defaultPrestigePowerRequirement
+    }
 
     /// Sum of the raw production of every placed item. Deliberately ignores
     /// adjacency bonuses: this measures what you built, not how you arranged it.
@@ -3011,7 +3188,7 @@ class GameViewModel: ObservableObject {
         // Fusion sets multiply fusions specifically, on top of the general
         // shard bonus — which is what makes High Fantasy a fusion build.
         let scaled = base * cosmetics.shards * (isFusion ? cosmetics.fusionShards : 1)
-            * starlightBonus("cascade")
+            * starlightBonus("cascade") * eventShardMultiplier
         let shardsGained = max(1, Int(scaled.rounded()))
         starlightShards += shardsGained
         totalMerges += 1
@@ -3152,7 +3329,8 @@ class GameViewModel: ObservableObject {
     }
 
     func starlightCost(_ upgrade: StarlightUpgrade) -> Int {
-        upgrade.cost(atLevel: starlightLevel(upgrade.id))
+        let scale = RemoteConfigManager.shared.config.arrayCostMultiplier ?? 1
+        return max(1, Int((Double(upgrade.cost(atLevel: starlightLevel(upgrade.id))) * scale).rounded()))
     }
 
     @discardableResult
@@ -3205,7 +3383,7 @@ class GameViewModel: ObservableObject {
         let cosmetics = activeEffect
         idleEngine.upgradeMultiplier =
             upgradeProductionMultiplier * purchaseMultiplier * surgeMultiplier
-            * cosmetics.production * starlightBonus("lens")
+            * cosmetics.production * starlightBonus("lens") * eventProductionMultiplier
         idleEngine.elementBonus = cosmetics.elementBonus
         idleEngine.recalculate(from: gridTiles)
     }
@@ -4058,6 +4236,10 @@ struct ContentView: View {
                 // rolls the daily quests over if midnight passed.
                 GameCenterManager.shared.refreshAuthenticationState()
                 gameVM.refreshDailyState()
+                // An event can start while the app sits in the background, so
+                // re-read rather than trusting the copy fetched at launch.
+                RemoteConfigManager.shared.refresh()
+                gameVM.syncUpgradeEffects()
                 Task { await IAPManager.shared.refreshEntitlements() }
             default:
                 break
@@ -5123,6 +5305,9 @@ struct GalacticCanvasView: View {
     /// Drives the trophy button's enabled state — tapping it before Game Center
     /// authenticates was presenting an inescapable blank modal.
     @ObservedObject private var gameCenter = GameCenterManager.shared
+    /// Observed so the event and notice banners appear the moment the config
+    /// lands, rather than on whatever unrelated redraw happens next.
+    @ObservedObject private var remoteConfig = RemoteConfigManager.shared
 
     // Tap-to-select rather than drag-and-drop: drag gestures fight the
     // enclosing ScrollView on iPhone and were effectively unusable.
@@ -5244,6 +5429,8 @@ struct GalacticCanvasView: View {
                     resourceBar
                     previewBanner
                     surgeBanner
+                    eventBanner
+                    noticeBanner
                     actionBar
                     hintLine
 
@@ -5443,6 +5630,52 @@ struct GalacticCanvasView: View {
     private var noticeColor: Color {
         guard blockReason != nil else { return .yellow.opacity(0.9) }
         return noticeIsError ? .red.opacity(0.9) : .cyan.opacity(0.95)
+    }
+
+    /// A running event, declared remotely. This is the payoff of the whole
+    /// remote-config exercise: a weekend bonus can start and end without an
+    /// App Store review.
+    @ViewBuilder
+    private var eventBanner: some View {
+        if let name = gameVM.activeEventName {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                Text("\(name) — \(eventSummary)")
+                    .font(.caption.bold())
+            }
+            .foregroundColor(.black)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.cyan))
+        }
+    }
+
+    @ViewBuilder
+    private var noticeBanner: some View {
+        if let notice = remoteConfig.config.notice,
+           notice.isActive(), let body = notice.body {
+            Text(body)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.8))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+    }
+
+    /// Built outside the ViewBuilder — accumulating into an array inside one
+    /// doesn't compile.
+    private var eventSummary: String {
+        /// "2" rather than "2.0", but "1.5" kept intact.
+        func trimmed(_ value: Double) -> String {
+            value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+        }
+
+        var parts: [String] = []
+        let production = gameVM.eventProductionMultiplier
+        let shards = gameVM.eventShardMultiplier
+        if production > 1 { parts.append("×\(trimmed(production)) Stardust") }
+        if shards > 1 { parts.append("×\(trimmed(shards)) Shards") }
+        return parts.joined(separator: ", ")
     }
 
     private var hintLine: some View {
