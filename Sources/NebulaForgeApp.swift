@@ -247,8 +247,26 @@ class GameCenterManager: NSObject, ObservableObject {
     @Published var lastAuthError: String?
     @Published var hasPendingSignIn = false
 
+    /// True in TestFlight and debug builds, false for an App Store copy.
+    ///
+    /// TestFlight installs carry a sandbox receipt; a shop build does not.
+    static var isTestBuild: Bool {
+        #if DEBUG
+        return true
+        #else
+        return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+        #endif
+    }
+
     /// Plain-language state for the help alert.
+    ///
+    /// Empty in App Store builds. This exists to tell *me* why authentication
+    /// failed; a player who taps a trophy should never be shown the string
+    /// "GKErrorDomain 6", which reads like the app is broken rather than like
+    /// they need to sign in somewhere.
     var diagnosticSummary: String {
+        guard Self.isTestBuild else { return "" }
+
         var lines = ["Signed in: \(GKLocalPlayer.local.isAuthenticated ? "yes" : "no")"]
         if !playerAlias.isEmpty { lines.append("Player: \(playerAlias)") }
         lines.append("Sign-in sheet held: \(hasPendingSignIn ? "yes" : "no")")
@@ -6306,7 +6324,11 @@ struct GalacticCanvasView: View {
             .alert("Leaderboards need Game Center", isPresented: $showGameCenterHelp) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text("Your scores are already being recorded and will appear once Game Center signs in. Open the Settings app, go to Apps, then Game Center, and make sure you're signed in there.\n\n\(gameCenter.diagnosticSummary)")
+                // The diagnostic block is empty outside TestFlight, so the
+                // trailing newlines have to go with it.
+                Text("Your scores are already being recorded and will appear once Game Center signs in. Open the Settings app, go to Apps, then Game Center, and make sure you're signed in there."
+                     + (gameCenter.diagnosticSummary.isEmpty
+                        ? "" : "\n\n" + gameCenter.diagnosticSummary))
             }
         }
     }
