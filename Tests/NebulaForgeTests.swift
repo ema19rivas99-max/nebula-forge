@@ -293,6 +293,43 @@ final class EconomyTests: XCTestCase {
                        "the goal would be unreachable or trivially complete")
     }
 
+    // MARK: - Starlight Array
+
+    func testStarlightTrackIDsAreUniqueAndWiredToSomething() {
+        let ids = StarlightCatalog.all.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "duplicate Starlight track ID")
+        // Each track is read by ID at exactly one call site in the view model.
+        // A renamed or added track with no consumer would silently do nothing.
+        XCTAssertEqual(Set(ids), ["lens", "cascade", "well"],
+                       "a Starlight track exists that nothing in the game reads")
+    }
+
+    func testStarlightCostsAlwaysGrow() {
+        for upgrade in StarlightCatalog.all {
+            XCTAssertGreaterThan(upgrade.growth, 1, "\(upgrade.id) would never get pricier")
+            XCTAssertGreaterThan(upgrade.perLevel, 0, "\(upgrade.id) buys nothing")
+            for level in 0..<40 {
+                XCTAssertGreaterThan(upgrade.cost(atLevel: level + 1),
+                                     upgrade.cost(atLevel: level),
+                                     "\(upgrade.id) stops getting more expensive at level \(level)")
+            }
+        }
+    }
+
+    func testStarlightOutscalesTheOnlyOtherShardSink() {
+        // The whole point of the Array: the tile board costs a fixed ~3,200 to
+        // open and then asks for nothing, so shards need a sink that keeps
+        // taking. Twenty levels of any one track must cost more than opening
+        // every tile from a post-Supernova board, or the surplus comes back.
+        let unlockAllTiles = (12..<GameViewModel.totalTiles)
+            .reduce(0) { $0 + max(5, ($1 - 5) * 5) }
+        for upgrade in StarlightCatalog.all {
+            let twentyLevels = (0..<20).reduce(0) { $0 + upgrade.cost(atLevel: $1) }
+            XCTAssertGreaterThan(twentyLevels, unlockAllTiles,
+                                 "\(upgrade.id) is cheaper than the sink it replaces")
+        }
+    }
+
     func testDailyQuestsAreThreeAndDistinct() {
         let quests = DailyQuestCatalog.today()
         XCTAssertEqual(quests.count, 3)

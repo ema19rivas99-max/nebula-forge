@@ -1869,6 +1869,59 @@ enum UpgradeCatalog {
     }
 }
 
+// MARK: - Starlight Array
+/// Repeatable in-run upgrades bought with Starlight Shards, wiped by the next
+/// Supernova.
+///
+/// Shards used to have exactly one sink. Opening every tile on the board costs
+/// about 3,200 and then asks for nothing else, while the goal ladder alone hands
+/// out 60,000 — so a played-in save sat on a pile of shards with nothing to do
+/// with them. The Array is what shards are actually for: no level cap, each one
+/// costing meaningfully more than the last, so there is no balance large enough
+/// to stop mattering. Resetting with the galaxy is what keeps it a decision —
+/// how hard to push *this* run — rather than a checklist you finish once.
+struct StarlightUpgrade: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let icon: String
+    let baseCost: Int
+    /// Each level costs this much more than the one before it.
+    let growth: Double
+    /// Added to this track's multiplier per level, so level 5 of a 0.12 track
+    /// is +60%. Additive rather than compounding: uncapped compounding on a
+    /// sink this cheap runs away within a single long session.
+    let perLevel: Double
+
+    func cost(atLevel level: Int) -> Int {
+        Int((Double(baseCost) * pow(growth, Double(level))).rounded())
+    }
+}
+
+enum StarlightCatalog {
+    /// Three tracks, each hooked to a different half of the loop — idle output,
+    /// merging, and comets — so the choice between them reflects how the player
+    /// is actually playing rather than which number is biggest.
+    static let all: [StarlightUpgrade] = [
+        StarlightUpgrade(id: "lens", title: "Fracture Lens",
+                         detail: "+12% Stardust production",
+                         icon: "rays",
+                         baseCost: 500, growth: 1.28, perLevel: 0.12),
+        StarlightUpgrade(id: "cascade", title: "Resonance Cascade",
+                         detail: "+8% Starlight Shards from merges",
+                         icon: "waveform.path",
+                         baseCost: 750, growth: 1.32, perLevel: 0.08),
+        StarlightUpgrade(id: "well", title: "Gravity Well",
+                         detail: "+15% from every comet you catch",
+                         icon: "circle.hexagongrid.fill",
+                         baseCost: 600, growth: 1.30, perLevel: 0.15),
+    ]
+
+    static func upgrade(for id: String) -> StarlightUpgrade? {
+        all.first { $0.id == id }
+    }
+}
+
 // MARK: - Item Catalog
 /// Every merge chain in the game. Each tier has a real name rather than the
 /// previous scheme of appending "II" repeatedly ("Stardust II II II").
@@ -2263,6 +2316,9 @@ class GameViewModel: ObservableObject {
     @Published var highestTierReached: Int = 0
     @Published var claimedGoalIDs: Set<String> = []
     @Published var upgradeLevels: [String: Int] = [:]
+    /// Starlight Array levels. Unlike `upgradeLevels` these are per-run and the
+    /// Supernova clears them.
+    @Published var starlightLevels: [String: Int] = [:]
     /// Stardust earned while the app was closed, surfaced once on launch.
     @Published var pendingOfflineEarnings: Double = 0
     /// Transient banner text describing the most recent merge.
@@ -2585,6 +2641,7 @@ class GameViewModel: ObservableObject {
         static let highestTierReached = "nf.highestTierReached"
         static let claimedGoalIDs = "nf.claimedGoalIDs"
         static let upgradeLevels = "nf.upgradeLevels"
+        static let starlightLevels = "nf.starlightLevels"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
         static let dailyStreak = "nf.dailyStreak"
@@ -2688,12 +2745,16 @@ class GameViewModel: ObservableObject {
     @discardableResult
     func collectComet() -> Bool {
         guard let active = comet, !active.isExpired else { return false }
-        stardust += active.stardust
-        starlightShards += active.shards
+        // Gravity Well pays out on the catch rather than on the spawn, so
+        // buying it mid-comet still counts for the one already on the board.
+        let well = starlightBonus("well")
+        let dust = active.stardust * well
+        stardust += dust
+        starlightShards += Int((Double(active.shards) * well).rounded())
         cometsCaught += 1
         todayComets += 1
         comet = nil
-        announceMerge("Comet caught   +\(abbreviatedNumber(active.stardust))")
+        announceMerge("Comet caught   +\(abbreviatedNumber(dust))")
         Feedback.comet()
         saveGameState()
         return true
@@ -2829,6 +2890,7 @@ class GameViewModel: ObservableObject {
         // Fusion sets multiply fusions specifically, on top of the general
         // shard bonus — which is what makes High Fantasy a fusion build.
         let scaled = base * cosmetics.shards * (isFusion ? cosmetics.fusionShards : 1)
+            * starlightBonus("cascade")
         let shardsGained = max(1, Int(scaled.rounded()))
         starlightShards += shardsGained
         totalMerges += 1
@@ -2955,6 +3017,38 @@ class GameViewModel: ObservableObject {
             + activeEffect.offlineHours
     }
 
+    // MARK: Starlight Array
+
+    func starlightLevel(_ id: String) -> Int {
+        starlightLevels[id] ?? 0
+    }
+
+    /// This track's multiplier at its current level. The per-level figure lives
+    /// in the catalog so the shop text and the maths can't drift apart.
+    func starlightBonus(_ id: String) -> Double {
+        guard let upgrade = StarlightCatalog.upgrade(for: id) else { return 1 }
+        return 1 + upgrade.perLevel * Double(starlightLevel(id))
+    }
+
+    func starlightCost(_ upgrade: StarlightUpgrade) -> Int {
+        upgrade.cost(atLevel: starlightLevel(upgrade.id))
+    }
+
+    @discardableResult
+    func purchaseStarlightUpgrade(_ upgrade: StarlightUpgrade) -> Bool {
+        let price = starlightCost(upgrade)
+        guard starlightShards >= price else { return false }
+
+        starlightShards -= price
+        starlightLevels[upgrade.id] = starlightLevel(upgrade.id) + 1
+
+        // Fracture Lens changes output immediately.
+        syncUpgradeEffects()
+        Feedback.purchase()
+        saveGameState()
+        return true
+    }
+
     @discardableResult
     func purchaseUpgrade(_ upgrade: PrestigeUpgrade) -> Bool {
         let level = upgradeLevel(upgrade.id)
@@ -2990,7 +3084,7 @@ class GameViewModel: ObservableObject {
         let cosmetics = activeEffect
         idleEngine.upgradeMultiplier =
             upgradeProductionMultiplier * purchaseMultiplier * surgeMultiplier
-            * cosmetics.production
+            * cosmetics.production * starlightBonus("lens")
         idleEngine.elementBonus = cosmetics.elementBonus
         idleEngine.recalculate(from: gridTiles)
     }
@@ -3324,6 +3418,9 @@ class GameViewModel: ObservableObject {
         // Supernova reset the board but kept the exponential price, so each
         // prestige started strictly poorer than the last.
         itemsForged = 0
+        // The Array burns with the galaxy. Shards themselves carry over, so a
+        // banked balance is a head start on rebuilding it, not a dead pile.
+        starlightLevels = [:]
         // Prestiging is the only source of Nebula Gems.
         nebulaGems += earnedMarks * 2
         hasPrestiged = true
@@ -3336,6 +3433,10 @@ class GameViewModel: ObservableObject {
         // is passed in rather than applied afterwards — rebuilding gridTiles
         // after seeding would wipe the items just placed.
         initializeBoard(unlockedRows: 3, unlockedCols: 4)
+
+        // The cleared Array is part of the output multiplier, so push it back
+        // into the engine rather than leaving the old run's bonus applied.
+        syncUpgradeEffects()
 
         GameCenterManager.shared.submitScore(Int64(galaxyMarks), leaderboardID: "nebulaforge.prestige")
         GameCenterManager.shared.report(self)
@@ -3377,6 +3478,7 @@ class GameViewModel: ObservableObject {
         defaults.set(highestTierReached, forKey: DefaultsKey.highestTierReached)
         defaults.set(Array(claimedGoalIDs), forKey: DefaultsKey.claimedGoalIDs)
         defaults.set(upgradeLevels, forKey: DefaultsKey.upgradeLevels)
+        defaults.set(starlightLevels, forKey: DefaultsKey.starlightLevels)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
         defaults.set(dailyStreak, forKey: DefaultsKey.dailyStreak)
         if let lastDailyClaim {
@@ -3503,6 +3605,7 @@ class GameViewModel: ObservableObject {
             highestTierReached: highestTierReached,
             claimedGoalIDs: Array(claimedGoalIDs),
             upgradeLevels: upgradeLevels,
+            starlightLevels: starlightLevels,
             unlockedTiles: gridTiles.flatMap { $0 }.filter(\.isUnlocked).map { "\($0.row),\($0.col)" },
             dailyStreak: dailyStreak,
             lastDailyClaim: lastDailyClaim,
@@ -3535,6 +3638,7 @@ class GameViewModel: ObservableObject {
         highestTierReached = snapshot.highestTierReached
         claimedGoalIDs = Set(snapshot.claimedGoalIDs)
         upgradeLevels = snapshot.upgradeLevels
+        starlightLevels = snapshot.starlightLevels ?? [:]
         dailyStreak = snapshot.dailyStreak
         lastDailyClaim = snapshot.lastDailyClaim
         hasMadeFirstPurchase = snapshot.hasMadeFirstPurchase
@@ -3611,6 +3715,7 @@ class GameViewModel: ObservableObject {
         highestTierReached = defaults.integer(forKey: DefaultsKey.highestTierReached)
         claimedGoalIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedGoalIDs) ?? [])
         upgradeLevels = defaults.dictionary(forKey: DefaultsKey.upgradeLevels) as? [String: Int] ?? [:]
+        starlightLevels = defaults.dictionary(forKey: DefaultsKey.starlightLevels) as? [String: Int] ?? [:]
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
         dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
         lastDailyClaim = defaults.object(forKey: DefaultsKey.lastDailyClaim) as? Date
@@ -3873,6 +3978,63 @@ struct UpgradeRow: View {
         .background(.ultraThinMaterial)
         .cornerRadius(12)
         .opacity(maxed ? 0.65 : 1)
+    }
+}
+
+// MARK: - Starlight Array Row
+/// One uncapped track. Shows the bonus already bought, not just the level, so
+/// the decision to buy another is visible without arithmetic.
+struct StarlightRow: View {
+    @EnvironmentObject var gameVM: GameViewModel
+    let upgrade: StarlightUpgrade
+
+    private var level: Int { gameVM.starlightLevel(upgrade.id) }
+    private var price: Int { gameVM.starlightCost(upgrade) }
+    private var affordable: Bool { gameVM.starlightShards >= price }
+    private var current: Int {
+        Int(((gameVM.starlightBonus(upgrade.id) - 1) * 100).rounded())
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: upgrade.icon)
+                .foregroundColor(.blue)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(upgrade.title)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                    Text("Lv \(level)")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                    if current > 0 {
+                        Text("+\(current)% now")
+                            .font(.caption2.bold())
+                            .foregroundColor(.green)
+                    }
+                }
+                Text(upgrade.detail)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            Button {
+                gameVM.purchaseStarlightUpgrade(upgrade)
+            } label: {
+                Label("\(price)", systemImage: "sparkle")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.blue)
+            .disabled(!affordable)
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .cornerRadius(12)
     }
 }
 
@@ -5674,6 +5836,35 @@ struct PrestigeView: View {
 
                         Divider().background(Color.white.opacity(0.3))
 
+                        // The Array sits above the permanent upgrades because
+                        // it's what shards are for, and this is the screen that
+                        // already explains what a Supernova takes away.
+                        HStack {
+                            Text("Starlight Array")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                            Spacer()
+                            Label("\(gameVM.starlightShards)", systemImage: "sparkle")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.blue)
+                        }
+                        .padding(.horizontal)
+
+                        Text("Spend Shards on this galaxy. No level cap, but the Supernova burns the Array down with everything else — your Shards themselves survive it.")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.white.opacity(0.55))
+                            .padding(.horizontal)
+
+                        VStack(spacing: 10) {
+                            ForEach(StarlightCatalog.all) { upgrade in
+                                StarlightRow(upgrade: upgrade)
+                            }
+                        }
+                        .padding(.horizontal)
+
+                        Divider().background(Color.white.opacity(0.3))
+
                         HStack {
                             Text("Permanent Upgrades")
                                 .font(.headline)
@@ -6305,6 +6496,9 @@ struct SaveSnapshot: Codable {
     var highestTierReached: Int
     var claimedGoalIDs: [String]
     var upgradeLevels: [String: Int]
+    /// Optional so saves written before the Starlight Array existed still
+    /// decode — a missing non-optional key fails the whole snapshot.
+    var starlightLevels: [String: Int]?
     var unlockedTiles: [String]
     var dailyStreak: Int
     var lastDailyClaim: Date?
