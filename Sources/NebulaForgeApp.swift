@@ -233,6 +233,24 @@ class GameCenterManager: NSObject, ObservableObject {
     private var pendingSignIn: UIViewController?
     private var sceneObserver: NSObjectProtocol?
 
+    /// The last thing GameKit actually said, surfaced in the UI rather than
+    /// only to `print`. There is no Mac on this project and so no Console.app,
+    /// which means a silent authentication failure can only be diagnosed by
+    /// shipping another build and guessing. This makes the state readable off
+    /// the phone instead.
+    @Published var lastAuthError: String?
+    @Published var hasPendingSignIn = false
+
+    /// Plain-language state for the help alert.
+    var diagnosticSummary: String {
+        var lines = ["Signed in: \(GKLocalPlayer.local.isAuthenticated ? "yes" : "no")"]
+        if !playerAlias.isEmpty { lines.append("Player: \(playerAlias)") }
+        lines.append("Sign-in sheet held: \(hasPendingSignIn ? "yes" : "no")")
+        if GKLocalPlayer.local.isUnderage { lines.append("Account is underage-restricted") }
+        if let lastAuthError { lines.append("Last error: \(lastAuthError)") }
+        return lines.joined(separator: "\n")
+    }
+
     /// Single entry point for GameKit's authenticate handler. Fires on an
     /// arbitrary thread, so everything it touches is moved to the main queue.
     func handleAuthentication(viewController: UIViewController?, error: Error?) {
@@ -241,12 +259,25 @@ class GameCenterManager: NSObject, ObservableObject {
 
             if let viewController {
                 self.pendingSignIn = viewController
+                self.hasPendingSignIn = true
                 self.presentPendingSignIn()
             } else {
                 // Either signed in or refused; either way the sheet is spent.
                 self.pendingSignIn = nil
+                self.hasPendingSignIn = false
                 if let error {
-                    print("Game Center auth failed: \(error.localizedDescription)")
+                    // The domain and code are what actually identify the
+                    // failure — `localizedDescription` alone is usually the
+                    // useless "The requested operation could not be completed".
+                    let ns = error as NSError
+                    self.lastAuthError = "\(ns.domain) \(ns.code): \(ns.localizedDescription)"
+                    print("Game Center auth failed: \(self.lastAuthError ?? "")")
+                } else if GKLocalPlayer.local.isAuthenticated {
+                    self.lastAuthError = nil
+                } else {
+                    // No sheet, no error, not signed in. This is the state that
+                    // has no other symptom, so name it explicitly.
+                    self.lastAuthError = "GameKit returned no sheet and no error"
                 }
             }
         }
@@ -269,6 +300,7 @@ class GameCenterManager: NSObject, ObservableObject {
         }
 
         pendingSignIn = nil
+        hasPendingSignIn = false
         stopObservingSceneActivation()
         top.present(sheet, animated: true)
         return true
@@ -5227,7 +5259,7 @@ struct GalacticCanvasView: View {
                 }
                 Button("Not now", role: .cancel) { }
             } message: {
-                Text("Sign in to Game Center to see how your galaxy ranks. Your scores are already being recorded and will appear once you do.")
+                Text("Sign in to Game Center to see how your galaxy ranks. Your scores are already being recorded and will appear once you do.\n\n\(gameCenter.diagnosticSummary)")
             }
         }
     }
