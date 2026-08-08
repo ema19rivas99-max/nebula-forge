@@ -769,13 +769,33 @@ struct Star: Codable, Identifiable, Equatable {
 }
 
 /// A group of stars close enough to be linked.
-struct Constellation {
+struct Constellation: Identifiable {
     var stars: [Star]
+
+    /// Stable handle for a group that has no identity of its own — the oldest
+    /// star in it. Names are stored against this, so a constellation keeps its
+    /// name while stars are added around it. Dragging the anchor out is the one
+    /// thing that loses the name, which is rare and recoverable.
+    var id: UUID { stars.min { $0.createdAt < $1.createdAt }?.id ?? UUID() }
 
     var size: Int { stars.count }
     var elements: Set<Element> { Set(stars.map(\.element)) }
     /// Every star the same element. Drives the specialist rewards.
     var pureElement: Element? { elements.count == 1 ? elements.first : nil }
+
+    /// Where to draw this group's label.
+    var centre: CGPoint {
+        let sx = stars.reduce(0) { $0 + $1.x } / Double(max(stars.count, 1))
+        let sy = stars.reduce(0) { $0 + $1.y } / Double(max(stars.count, 1))
+        return CGPoint(x: sx, y: sy)
+    }
+
+    /// What this group is worth, as a fraction. Mirrors the view model so the
+    /// map can show each cluster's own contribution instead of one total the
+    /// player can't attribute to anything.
+    var productionBonus: Double {
+        Double(size - 1) * 0.04 + (pureElement != nil ? 0.08 : 0)
+    }
 }
 
 enum StarChart {
@@ -2689,6 +2709,8 @@ class GameViewModel: ObservableObject {
     @Published var starlightLevels: [String: Int] = [:]
     /// The permanent chart. Nothing ever removes a star.
     @Published var stars: [Star] = []
+    /// Player-given constellation names, keyed by the group's anchor star.
+    @Published var constellationNames: [UUID: String] = [:]
     /// Stardust earned while the app was closed, surfaced once on launch.
     @Published var pendingOfflineEarnings: Double = 0
     /// How long the player was actually away, and whether the galaxy filled up
@@ -3044,6 +3066,7 @@ class GameViewModel: ObservableObject {
         static let upgradeLevels = "nf.upgradeLevels"
         static let starlightLevels = "nf.starlightLevels"
         static let stars = "nf.stars"
+        static let constellationNames = "nf.constellationNames"
         static let unlockedTiles = "nf.unlockedTiles"
         static let lastSaveDate = "nf.lastSaveDate"
         static let dailyStreak = "nf.dailyStreak"
@@ -3501,12 +3524,53 @@ class GameViewModel: ObservableObject {
     /// and an uncapped fifth multiplier on a chart that only ever grows is how
     /// an idle game's curve stops meaning anything.
     var chartProductionMultiplier: Double {
-        let raw = constellations.reduce(0.0) { total, group in
-            let linked = Double(group.size - 1) * 0.02
-            let pure = group.pureElement != nil ? 0.05 : 0
-            return total + linked + pure
+        1 + min(constellations.reduce(0.0) { $0 + $1.productionBonus }, 0.75)
+    }
+
+    /// Which run each star came from, so a dot on the map can say "Galaxy #3"
+    /// instead of nothing at all.
+    func runNumber(of star: Star) -> Int {
+        (stars.sorted { $0.createdAt < $1.createdAt }
+            .firstIndex { $0.id == star.id } ?? 0) + 1
+    }
+
+    func constellationName(_ group: Constellation) -> String? {
+        constellationNames[group.id]
+    }
+
+    func nameConstellation(_ group: Constellation, to name: String) {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20))
+        if trimmed.isEmpty {
+            constellationNames.removeValue(forKey: group.id)
+        } else {
+            constellationNames[group.id] = trimmed
         }
-        return 1 + min(raw, 0.75)
+        saveGameState()
+    }
+
+    /// The nearest ability still locked, with how far off it is. Without this
+    /// the chart shows four padlocks and no sense of which one is close.
+    var nextAbilityHint: String? {
+        let groups = constellations
+        guard let next = ChartAbility.allCases.first(where: {
+            !$0.isEarned(stars: stars, constellations: groups)
+        }) else { return nil }
+
+        switch next {
+        case .beacon:
+            let best = groups.map(\.size).max() ?? 0
+            return "\(max(0, 5 - best)) more linked stars unlocks \(next.title)"
+        case .nursery:
+            let best = groups.filter { $0.pureElement != nil }.map(\.size).max() ?? 0
+            return best > 0
+                ? "\(max(0, 4 - best)) more of one element unlocks \(next.title)"
+                : "Link 4 stars of one element to unlock \(next.title)"
+        case .convergence:
+            let best = groups.map { $0.elements.count }.max() ?? 0
+            return "\(max(0, 3 - best)) more elements in one group unlocks \(next.title)"
+        case .ascendant:
+            return "\(max(0, 20 - stars.count)) more Supernovas unlocks \(next.title)"
+        }
     }
 
     /// Star minted from the galaxy being burned. Reads the board rather than
@@ -4050,6 +4114,9 @@ class GameViewModel: ObservableObject {
         if let encodedStars = try? JSONEncoder().encode(stars) {
             defaults.set(encodedStars, forKey: DefaultsKey.stars)
         }
+        let names = Dictionary(uniqueKeysWithValues:
+            constellationNames.map { ($0.key.uuidString, $0.value) })
+        defaults.set(names, forKey: DefaultsKey.constellationNames)
         defaults.set(Date(), forKey: DefaultsKey.lastSaveDate)
         defaults.set(dailyStreak, forKey: DefaultsKey.dailyStreak)
         if let lastDailyClaim {
@@ -4305,6 +4372,10 @@ class GameViewModel: ObservableObject {
         if let starData = defaults.data(forKey: DefaultsKey.stars),
            let decodedStars = try? JSONDecoder().decode([Star].self, from: starData) {
             stars = decodedStars
+        }
+        if let names = defaults.dictionary(forKey: DefaultsKey.constellationNames) as? [String: String] {
+            constellationNames = Dictionary(uniqueKeysWithValues:
+                names.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
         }
         idleEngine.permanentMultiplier = defaults.object(forKey: DefaultsKey.permanentMultiplier) as? Double ?? 1.0
         dailyStreak = defaults.integer(forKey: DefaultsKey.dailyStreak)
@@ -4651,12 +4722,24 @@ struct StarlightRow: View {
 }
 
 // MARK: - Star Chart View
-/// The permanent map. Drag stars together to form constellations.
+/// The permanent map of every galaxy you've burned.
+///
+/// The first version of this screen failed the only test that matters: the
+/// person who designed it couldn't say what it meant. It drew anonymous dots on
+/// an empty field with one percentage underneath and never explained that each
+/// dot was a run, that dragging them together was the point, or what any of it
+/// was worth. Everything here is aimed at that — a star you can tap and learn
+/// something from, clusters that carry their own name and their own payout, and
+/// a single line saying what to do next.
 struct StarChartView: View {
     @EnvironmentObject var gameVM: GameViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var dragging: UUID?
     @State private var dragPoint: CGPoint = .zero
+    @State private var selected: Star?
+    @State private var renaming: Constellation?
+    @State private var draftName: String = ""
+    @State private var twinkle = false
 
     private var constellations: [Constellation] { gameVM.constellations }
 
@@ -4666,31 +4749,33 @@ struct StarChartView: View {
                 CosmicBackground(theme: gameVM.theme)
 
                 VStack(spacing: 10) {
+                    explainer
                     summary
 
                     GeometryReader { geo in
                         ZStack {
+                            nebulaField
                             links(in: geo.size)
+                            constellationLabels(in: geo.size)
+
                             ForEach(gameVM.stars) { star in
                                 starView(star, in: geo.size)
                             }
 
-                            if gameVM.stars.isEmpty {
-                                Text("Trigger a Supernova and the galaxy you burned becomes a star here.")
-                                    .font(.caption)
-                                    .multilineTextAlignment(.center)
-                                    .foregroundColor(.white.opacity(0.6))
-                                    .padding(40)
-                            }
+                            if gameVM.stars.isEmpty { emptyState }
                         }
                         .frame(width: geo.size.width, height: geo.size.height)
                         .contentShape(Rectangle())
+                        .onTapGesture { selected = nil }
                     }
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(16)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
                     .padding(.horizontal)
 
-                    abilityList
+                    detailOrHint
                 }
                 .padding(.vertical)
             }
@@ -4701,14 +4786,44 @@ struct StarChartView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .onAppear {
+                withAnimation(.easeInOut(duration: 2.5).repeatForever(autoreverses: true)) {
+                    twinkle = true
+                }
+            }
+            .alert("Name this constellation", isPresented: Binding(
+                get: { renaming != nil },
+                set: { if !$0 { renaming = nil } }
+            )) {
+                TextField("Constellation", text: $draftName)
+                Button("Save") {
+                    if let group = renaming { gameVM.nameConstellation(group, to: draftName) }
+                    renaming = nil
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
+            } message: {
+                Text("Constellations you name keep their name as you add stars to them.")
+            }
         }
     }
 
+    // MARK: Explanation
+
+    /// The sentence the first version was missing entirely.
+    private var explainer: some View {
+        Text("Every Supernova leaves one star here, marked with how that galaxy ended. Drag stars near each other to link them — linked stars make every future galaxy produce more.")
+            .font(.caption2)
+            .multilineTextAlignment(.center)
+            .foregroundColor(.white.opacity(0.7))
+            .padding(.horizontal)
+    }
+
     private var summary: some View {
-        HStack(spacing: 16) {
-            stat("\(gameVM.stars.count)", "Stars")
+        HStack(spacing: 10) {
+            stat("\(gameVM.stars.count)", "Galaxies burned")
             stat("\(constellations.count)", "Constellations")
-            stat("+\(Int(((gameVM.chartProductionMultiplier - 1) * 100).rounded()))%", "Production")
+            stat("+\(Int(((gameVM.chartProductionMultiplier - 1) * 100).rounded()))%",
+                 "Production, forever")
         }
         .padding(.horizontal)
     }
@@ -4716,7 +4831,10 @@ struct StarChartView: View {
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(spacing: 2) {
             Text(value).font(.headline).foregroundColor(.white)
-            Text(label).font(.caption2).foregroundColor(.white.opacity(0.6))
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -4724,8 +4842,38 @@ struct StarChartView: View {
         .cornerRadius(10)
     }
 
-    /// Lines between linked stars, so a constellation reads as one shape rather
-    /// than as stars that happen to sit near each other.
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.largeTitle)
+                .foregroundColor(.white.opacity(0.4))
+            Text("Nothing here yet.")
+                .font(.subheadline.bold())
+                .foregroundColor(.white.opacity(0.8))
+            Text("Trigger your first Supernova and the galaxy you burn becomes a star on this map.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundColor(.white.opacity(0.55))
+        }
+        .padding(40)
+    }
+
+    // MARK: Map
+
+    /// Depth behind the stars. Three dots on flat black read as a debug screen;
+    /// this is what makes the same three dots read as a sky.
+    private var nebulaField: some View {
+        ZStack {
+            RadialGradient(
+                colors: [Color.purple.opacity(0.28), Color.blue.opacity(0.10), .clear],
+                center: .init(x: 0.35, y: 0.3), startRadius: 4, endRadius: 320)
+            RadialGradient(
+                colors: [Color.cyan.opacity(0.16), .clear],
+                center: .init(x: 0.75, y: 0.72), startRadius: 2, endRadius: 240)
+        }
+        .blendMode(.screen)
+    }
+
     private func links(in size: CGSize) -> some View {
         Path { path in
             for group in constellations {
@@ -4738,31 +4886,88 @@ struct StarChartView: View {
                 }
             }
         }
-        .stroke(Color.white.opacity(0.25), lineWidth: 1)
+        .stroke(
+            LinearGradient(colors: [.white.opacity(0.5), .cyan.opacity(0.35)],
+                           startPoint: .leading, endPoint: .trailing),
+            style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+        )
+        .shadow(color: .cyan.opacity(0.5), radius: 3)
+    }
+
+    /// Each cluster carries its own name and its own contribution, so the total
+    /// at the top is attributable instead of mysterious.
+    private func constellationLabels(in size: CGSize) -> some View {
+        ForEach(constellations) { group in
+            let centre = group.centre
+            let bonus = Int((group.productionBonus * 100).rounded())
+
+            Button {
+                draftName = gameVM.constellationName(group) ?? ""
+                renaming = group
+            } label: {
+                HStack(spacing: 4) {
+                    Text(gameVM.constellationName(group) ?? "Unnamed")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                    Text("+\(bonus)%")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.green)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(.ultraThinMaterial))
+            }
+            .buttonStyle(.plain)
+            .position(x: centre.x * size.width,
+                      y: max(14, centre.y * size.height - 34))
+        }
     }
 
     private func starView(_ star: Star, in size: CGSize) -> some View {
-        // Magnitude drives the radius, so a chart of deep runs looks different
-        // from a chart of shallow ones at a glance.
-        let diameter = 10 + CGFloat(min(star.magnitude, 8)) * 2.5
+        // Magnitude drives size much harder than before. A tier-8 run should
+        // look like an achievement next to a tier-2 one, not one pixel wider.
+        let diameter = 14 + CGFloat(min(star.magnitude, 9)) * 4
+        let isSelected = selected?.id == star.id
         let position = dragging == star.id
             ? dragPoint
             : CGPoint(x: star.x * size.width, y: star.y * size.height)
 
         return ZStack {
             Circle()
-                .fill(star.element.tint)
+                .fill(star.element.tint.opacity(0.22))
+                .frame(width: diameter * 2.4, height: diameter * 2.4)
+                .blur(radius: 8)
+                .scaleEffect(twinkle ? 1.08 : 0.94)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [.white, star.element.tint, star.element.tint.opacity(0.7)],
+                        center: .init(x: 0.35, y: 0.3),
+                        startRadius: 0, endRadius: diameter * 0.7)
+                )
                 .frame(width: diameter, height: diameter)
-                .shadow(color: star.element.tint.opacity(0.8), radius: 6)
+
+            // A hybrid run is the rarest thing that can happen, so it gets a
+            // marker you can pick out across the map.
             if star.isHybrid {
                 Circle()
                     .stroke(Color.white.opacity(0.9), lineWidth: 1.5)
-                    .frame(width: diameter + 7, height: diameter + 7)
+                    .frame(width: diameter + 9, height: diameter + 9)
+                Circle()
+                    .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                    .frame(width: diameter + 15, height: diameter + 15)
+            }
+
+            if isSelected {
+                Circle()
+                    .stroke(Color.yellow, lineWidth: 2)
+                    .frame(width: diameter + 22, height: diameter + 22)
             }
         }
         .position(position)
         .gesture(
-            DragGesture()
+            DragGesture(minimumDistance: 4)
                 .onChanged { value in
                     dragging = star.id
                     dragPoint = value.location
@@ -4774,32 +4979,95 @@ struct StarChartView: View {
                     dragging = nil
                 }
         )
+        .onTapGesture { selected = isSelected ? nil : star }
     }
 
-    private var abilityList: some View {
-        VStack(spacing: 6) {
+    // MARK: Below the map
+
+    /// One panel that either explains the tapped star or tells you what to do
+    /// next. The old screen showed four padlocks and no sense of which was near.
+    @ViewBuilder
+    private var detailOrHint: some View {
+        if let star = selected {
+            starDetail(star)
+        } else {
+            VStack(spacing: 8) {
+                if let hint = gameVM.nextAbilityHint {
+                    Label(hint, systemImage: "target")
+                        .font(.caption)
+                        .foregroundColor(.yellow)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Label("Every ability earned.", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+                abilityRow
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func starDetail(_ star: Star) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(star.element.tint)
+                    .frame(width: 12, height: 12)
+                Text("Galaxy #\(gameVM.runNumber(of: star))")
+                    .font(.subheadline.bold())
+                    .foregroundColor(.white)
+                if star.isHybrid {
+                    Text("HYBRID")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.white))
+                }
+                Spacer()
+                Text(star.createdAt.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
+            }
+
+            Text("Ruled by \(star.element.displayName) · reached tier \(star.magnitude) · paid \(star.marks) Mark\(star.marks == 1 ? "" : "s")")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.75))
+
+            Text(star.element.roleDetail)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.ultraThinMaterial)
+        .cornerRadius(12)
+        .padding(.horizontal)
+    }
+
+    /// Compact row rather than four stacked cards — the list was eating half
+    /// the screen to say "locked" four times.
+    private var abilityRow: some View {
+        HStack(spacing: 6) {
             ForEach(ChartAbility.allCases) { ability in
                 let earned = gameVM.hasAbility(ability)
-                HStack(spacing: 10) {
+                VStack(spacing: 3) {
                     Image(systemName: earned ? "checkmark.seal.fill" : "lock.fill")
-                        .foregroundColor(earned ? .green : .white.opacity(0.35))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(ability.title)
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                        Text(earned ? ability.detail : ability.requirement)
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.65))
-                    }
-                    Spacer()
+                        .font(.caption)
+                        .foregroundColor(earned ? .green : .white.opacity(0.3))
+                    Text(ability.title)
+                        .font(.system(size: 9, weight: earned ? .bold : .regular))
+                        .foregroundColor(earned ? .white : .white.opacity(0.45))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
-                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
                 .background(.ultraThinMaterial)
-                .cornerRadius(10)
+                .cornerRadius(8)
             }
         }
-        .padding(.horizontal)
     }
 }
 
