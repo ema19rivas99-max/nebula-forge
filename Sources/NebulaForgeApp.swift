@@ -766,6 +766,17 @@ struct Star: Codable, Identifiable, Equatable {
     var x: Double
     var y: Double
     var createdAt: Date = Date()
+
+    /// What this star is worth to a constellation.
+    ///
+    /// Stars used to count equally, which meant a Supernova off a board of
+    /// tier-2 scraps paid exactly what one off a deep merged board paid — so
+    /// the chart quietly rewarded spamming cheap prestiges. That is the same
+    /// mistake the Marks formula was rewritten to stop making, reintroduced in
+    /// a second currency. Depth is what pays.
+    var weight: Double {
+        1 + Double(min(magnitude, 12)) * 0.12 + (isHybrid ? 0.25 : 0)
+    }
 }
 
 /// A group of stars close enough to be linked.
@@ -793,8 +804,13 @@ struct Constellation: Identifiable {
     /// What this group is worth, as a fraction. Mirrors the view model so the
     /// map can show each cluster's own contribution instead of one total the
     /// player can't attribute to anything.
+    /// A lone star earns nothing — it has to be linked to something. Beyond
+    /// that, each star contributes in proportion to how deep the run behind it
+    /// went, so twelve shallow prestiges do not out-earn four real ones.
     var productionBonus: Double {
-        Double(size - 1) * 0.04 + (pureElement != nil ? 0.08 : 0)
+        guard size > 1 else { return 0 }
+        return stars.reduce(0) { $0 + $1.weight } * 0.04
+            + (pureElement != nil ? 0.08 : 0)
     }
 }
 
@@ -4862,16 +4878,16 @@ struct StarChartView: View {
 
     /// Depth behind the stars. Three dots on flat black read as a debug screen;
     /// this is what makes the same three dots read as a sky.
+    /// Shipped greyscale and tinted with the equipped theme's accent, rather
+    /// than baked in colour — a saturated plate would fight half of the twelve
+    /// themes, and the monochrome file is a third of the size.
     private var nebulaField: some View {
-        ZStack {
-            RadialGradient(
-                colors: [Color.purple.opacity(0.28), Color.blue.opacity(0.10), .clear],
-                center: .init(x: 0.35, y: 0.3), startRadius: 4, endRadius: 320)
-            RadialGradient(
-                colors: [Color.cyan.opacity(0.16), .clear],
-                center: .init(x: 0.75, y: 0.72), startRadius: 2, endRadius: 240)
-        }
-        .blendMode(.screen)
+        Image("chart_nebula")
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .colorMultiply(gameVM.theme.accent)
+            .opacity(0.55)
+            .allowsHitTesting(false)
     }
 
     private func links(in size: CGSize) -> some View {
@@ -5034,6 +5050,12 @@ struct StarChartView: View {
             Text("Ruled by \(star.element.displayName) · reached tier \(star.magnitude) · paid \(star.marks) Mark\(star.marks == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.75))
+
+            // Spelled out, because the whole point of merging deep is that this
+            // number goes up and the player should be able to see that it did.
+            Text("Brightness ×\(String(format: "%.2f", star.weight)) — deeper galaxies are worth more when linked")
+                .font(.caption2)
+                .foregroundColor(.green.opacity(0.85))
 
             Text(star.element.roleDetail)
                 .font(.caption2)

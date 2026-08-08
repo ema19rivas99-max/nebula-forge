@@ -440,6 +440,43 @@ final class EconomyTests: XCTestCase {
                        "elements must meet in the same constellation")
     }
 
+    func testDeeperStarsAreWorthMoreThanShallowOnes() {
+        // Stars used to count equally, which made twelve cheap Supernovas beat
+        // four deep ones — the exact mistake the Marks formula was rewritten to
+        // stop making.
+        let shallow = Constellation(stars: [star(0.5, 0.5, .fire, magnitude: 1),
+                                            star(0.53, 0.5, .fire, magnitude: 1)])
+        let deep = Constellation(stars: [star(0.5, 0.5, .fire, magnitude: 9),
+                                         star(0.53, 0.5, .fire, magnitude: 9)])
+        XCTAssertGreaterThan(deep.productionBonus, shallow.productionBonus,
+                             "a deep run must beat a shallow one")
+    }
+
+    func testHybridStarsCarryAPremium() {
+        let plain = Star(element: .fire, magnitude: 5, isHybrid: false, marks: 1, x: 0, y: 0)
+        let hybrid = Star(element: .fire, magnitude: 5, isHybrid: true, marks: 1, x: 0, y: 0)
+        XCTAssertGreaterThan(hybrid.weight, plain.weight)
+    }
+
+    func testALoneStarEarnsNothing() {
+        let alone = Constellation(stars: [star(0.5, 0.5, .fire, magnitude: 9)])
+        XCTAssertEqual(alone.productionBonus, 0,
+                       "an unlinked star must not pay out")
+    }
+
+    func testChartBonusStaysCapped() {
+        // Sixty deep linked stars must not outrun the cap; the chart only ever
+        // grows, and an uncapped fifth multiplier drowns out everything else.
+        let many = (0..<StarChart.capacity).map { i in
+            star(0.1 + Double(i % 10) * 0.02, 0.1 + Double(i / 10) * 0.02,
+                 .fire, magnitude: 12)
+        }
+        let total = StarChart.constellations(from: many)
+            .reduce(0.0) { $0 + $1.productionBonus }
+        XCTAssertGreaterThan(total, 0.75, "test is meaningless if the cap isn't exceeded")
+        XCTAssertEqual(1 + min(total, 0.75), 1.75, accuracy: 0.0001)
+    }
+
     func testChartCapacityIsFinite() {
         XCTAssertGreaterThan(StarChart.capacity, 20,
                              "capacity must outlast the 20-star Ascendant goal")
