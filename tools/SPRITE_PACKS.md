@@ -56,7 +56,13 @@ Result URLs look like:
   material AND the colour. Carved crystal is the material; the crystal takes
   the element's hue (amber, amethyst, citrine). Same trick applies to any
   pack whose theme collides with one of the four elements.
-- **Keep the body bright.** Dark-bodied sprites sink into the dark board.
+- **Keep the body bright, and measure it.** Dark-bodied sprites sink into the
+  dark board. Don't eyeball this: take the mean luminance
+  (0.2126R+0.7152G+0.0722B) of pixels with alpha>128, per chain, and compare
+  against the darkest theme's board colour rgb(5,3,38). The shipped classic
+  set sits around 81 for its void chain (5.09x contrast); anything much below
+  that is a regression. Clockwork's "blackened iron" void chain measured 35.9
+  (2.62x) and had to be regenerated in bright gunmetal.
 - **Generate on plain white**; the cut floods inward from the edges, so white
   *enclosed* inside the artwork is preserved deliberately.
 
