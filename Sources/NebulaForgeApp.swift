@@ -2863,6 +2863,62 @@ class GameViewModel: ObservableObject {
         return true
     }
 
+    /// Moves a placed item onto an empty unlocked tile.
+    ///
+    /// Adjacency is most of what a board is worth — Fire stacks with Fire, Void
+    /// drains whatever it touches, Radiant buffs its neighbours — but until now
+    /// an item's position was decided by wherever the forge happened to drop it
+    /// and could never be changed. Arranging the board is the strategy layer
+    /// that the element rules were already asking for.
+    @discardableResult
+    func moveItemOnGrid(from: (row: Int, col: Int), to: (row: Int, col: Int)) -> Bool {
+        guard isOnBoard(from), isOnBoard(to),
+              var item = gridTiles[from.row][from.col].placedItem,
+              gridTiles[to.row][to.col].isUnlocked,
+              gridTiles[to.row][to.col].placedItem == nil else {
+            Feedback.denied()
+            return false
+        }
+
+        item.position = (to.row, to.col)
+        gridTiles[to.row][to.col].placedItem = item
+        gridTiles[from.row][from.col].placedItem = nil
+
+        idleEngine.recalculate(from: gridTiles)
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    /// Exchanges two placed items. This is what a tap on an item that can't be
+    /// merged with the selection does, so rearranging a packed board doesn't
+    /// require an empty tile to shuffle through.
+    @discardableResult
+    func swapItemsOnGrid(from: (row: Int, col: Int), to: (row: Int, col: Int)) -> Bool {
+        guard isOnBoard(from), isOnBoard(to),
+              !(from.row == to.row && from.col == to.col),
+              var source = gridTiles[from.row][from.col].placedItem,
+              var target = gridTiles[to.row][to.col].placedItem else {
+            Feedback.denied()
+            return false
+        }
+
+        source.position = (to.row, to.col)
+        target.position = (from.row, from.col)
+        gridTiles[to.row][to.col].placedItem = source
+        gridTiles[from.row][from.col].placedItem = target
+
+        idleEngine.recalculate(from: gridTiles)
+        Feedback.place()
+        saveGameState()
+        return true
+    }
+
+    private func isOnBoard(_ position: (row: Int, col: Int)) -> Bool {
+        gridTiles.indices.contains(position.row)
+            && gridTiles[position.row].indices.contains(position.col)
+    }
+
     /// Merges two items in the overflow tray, which only fills up when the grid
     /// has no room left.
     @discardableResult
@@ -3375,7 +3431,7 @@ class GameViewModel: ObservableObject {
         if freeUnlockedTiles.isEmpty {
             return "Board is full — merge to make room, or unlock a tile."
         }
-        return "Forge more items to fill your galaxy."
+        return "Forge more, or tap an item then an empty tile to move it."
     }
 
     func placeItemOnGrid(_ item: CelestialItem, row: Int, col: Int) -> Bool {
@@ -4794,6 +4850,8 @@ struct TutorialView: View {
          "Tap one item, then a matching one. They combine into a stronger item worth triple the production — and it lands on the second tile, so you choose where the power ends up."),
         ("link", "Position Is Everything",
          "Every element earns its output differently and changes its neighbours. The number under each item is what that tile actually produces — watch it move as you rearrange."),
+        ("arrow.up.and.down.and.arrow.left.and.right", "Arrange The Board",
+         "Tap an item, then an empty tile to move it there. Tap two items that can't combine and they swap places instead, so you can lay out a packed board however you like."),
         ("wand.and.stars", "Fuse Opposites",
          "Two *different* elements at the same tier can fuse into a hybrid instead of tiering up. Hybrids produce far more, and pay triple Shards."),
         ("sparkles", "Catch Comets",
@@ -4976,6 +5034,10 @@ struct GalacticCanvasView: View {
     @State private var selectedPosition: GridPosition?
     @State private var selectedTrayItemID: UUID?
     @State private var blockReason: String?
+    /// Whether `blockReason` is a refusal or just a note. A swap is a normal
+    /// outcome, and printing it in the same red as "these can't fuse" reads as
+    /// something having gone wrong.
+    @State private var noticeIsError = true
     @State private var showTutorial = false
     @State private var showSettings = false
     @State private var showProfile = false
@@ -5018,6 +5080,7 @@ struct GalacticCanvasView: View {
         let position = GridPosition(row: row, col: col)
         guard let tapped = tile(at: position) else { return }
         blockReason = nil
+        noticeIsError = true
 
         // The comet is the only time-critical thing on the board, so it wins
         // the tap regardless of what's selected.
@@ -5035,7 +5098,13 @@ struct GalacticCanvasView: View {
             return
         }
 
+        // An empty tile with something selected is a move. It used to just
+        // clear the selection, which left no way at all to rearrange a board
+        // the forge had filled in whatever order it liked.
         guard tapped.placedItem != nil else {
+            if let current = selectedPosition {
+                gameVM.moveItemOnGrid(from: (current.row, current.col), to: (row, col))
+            }
             selectedPosition = nil
             return
         }
@@ -5055,10 +5124,18 @@ struct GalacticCanvasView: View {
             return
         }
 
-        // Say why it didn't combine rather than failing silently, then treat
-        // the tap as picking a new item.
+        // Two items that can't combine swap places instead — that's how a full
+        // board gets rearranged. Say why they didn't merge as well, so a mistap
+        // reads as a mistap rather than the game doing something arbitrary.
         if let a = item(at: current), let b = item(at: position) {
-            blockReason = CelestialItem.mergeBlockReason(item1: a, item2: b)
+            let reason = CelestialItem.mergeBlockReason(item1: a, item2: b)
+            if gameVM.swapItemsOnGrid(from: (current.row, current.col), to: (row, col)) {
+                blockReason = reason.map { "Swapped — \($0)" } ?? "Swapped"
+                noticeIsError = false
+                selectedPosition = nil
+                return
+            }
+            blockReason = reason
         }
         selectedPosition = position
     }
@@ -5268,10 +5345,15 @@ struct GalacticCanvasView: View {
         }
     }
 
+    private var noticeColor: Color {
+        guard blockReason != nil else { return .yellow.opacity(0.9) }
+        return noticeIsError ? .red.opacity(0.9) : .cyan.opacity(0.95)
+    }
+
     private var hintLine: some View {
         Text(blockReason ?? gameVM.nextStepHint)
             .font(.caption)
-            .foregroundColor(blockReason == nil ? .yellow.opacity(0.9) : .red.opacity(0.9))
+            .foregroundColor(noticeColor)
             .multilineTextAlignment(.center)
             .lineLimit(2)
             .frame(height: Self.hintLineHeight)
