@@ -47,27 +47,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     func authenticateGameCenterPlayer() {
         GKLocalPlayer.local.authenticateHandler = { viewController, error in
-            // Always publish the current state, including failure, so the UI can
-            // disable Game Center affordances rather than offering a button that
-            // opens a modal the player can't escape.
-            GameCenterManager.shared.playerAuthenticated()
-
-            if let vc = viewController {
-                // Present the sign-in sheet only once the app actually has a
-                // foreground scene; at launch `.first` can be one that has no
-                // window yet, and presenting on it does nothing.
-                guard let scene = UIApplication.shared.connectedScenes
-                        .compactMap({ $0 as? UIWindowScene })
-                        .first(where: { $0.activationState == .foregroundActive }),
-                      let root = scene.keyWindow?.rootViewController
-                        ?? scene.windows.first?.rootViewController else { return }
-                root.present(vc, animated: true)
-            } else if let error = error {
-                print("Game Center auth failed: \(error.localizedDescription)")
-            } else if GKLocalPlayer.local.isAuthenticated {
-                print("Game Center authenticated")
-                GameCenterManager.shared.playerAuthenticated()
-            }
+            // GameKit hands the sign-in sheet over exactly once, and this fires
+            // during launch — before any scene is foreground-active. Presenting
+            // it here and giving up when there's no window meant the sheet was
+            // silently dropped and the player was never asked to sign in, for
+            // the rest of the install. The manager holds it instead and presents
+            // it as soon as there is somewhere to present it.
+            GameCenterManager.shared.handleAuthentication(viewController: viewController,
+                                                          error: error)
         }
     }
 
@@ -240,6 +227,91 @@ class GameCenterManager: NSObject, ObservableObject {
     /// resubmitted on every merge.
     fileprivate var reportedPercent: [String: Double] = [:]
 
+    /// The sign-in sheet GameKit provided, held until there is a window to put
+    /// it on. GameKit never offers it a second time, so losing it means the
+    /// player can't sign in at all from inside the app.
+    private var pendingSignIn: UIViewController?
+    private var sceneObserver: NSObjectProtocol?
+
+    /// Single entry point for GameKit's authenticate handler. Fires on an
+    /// arbitrary thread, so everything it touches is moved to the main queue.
+    func handleAuthentication(viewController: UIViewController?, error: Error?) {
+        DispatchQueue.main.async {
+            self.playerAuthenticated()
+
+            if let viewController {
+                self.pendingSignIn = viewController
+                self.presentPendingSignIn()
+            } else {
+                // Either signed in or refused; either way the sheet is spent.
+                self.pendingSignIn = nil
+                if let error {
+                    print("Game Center auth failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Presents the held sign-in sheet if it's still needed and there's now a
+    /// window for it. Returns whether it went up.
+    @discardableResult
+    func presentPendingSignIn() -> Bool {
+        guard !GKLocalPlayer.local.isAuthenticated else {
+            pendingSignIn = nil
+            stopObservingSceneActivation()
+            return false
+        }
+        guard let sheet = pendingSignIn else { return false }
+        guard let top = topViewController() else {
+            // No window yet — try again the moment a scene activates.
+            observeSceneActivation()
+            return false
+        }
+
+        pendingSignIn = nil
+        stopObservingSceneActivation()
+        top.present(sheet, animated: true)
+        return true
+    }
+
+    private func stopObservingSceneActivation() {
+        guard let sceneObserver else { return }
+        NotificationCenter.default.removeObserver(sceneObserver)
+        self.sceneObserver = nil
+    }
+
+    private func observeSceneActivation() {
+        guard sceneObserver == nil else { return }
+        sceneObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.playerAuthenticated()
+            // The scene is active but its root controller may not be mounted
+            // for another runloop turn or two, so give it a beat.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.presentPendingSignIn()
+            }
+        }
+    }
+
+    /// The controller actually on screen. Presenting on one that is already
+    /// presenting does nothing at all, so walk to whatever is on top; and
+    /// presenting on one whose view isn't in a window yet is dropped silently,
+    /// so that's treated as "no window" and retried rather than spent.
+    private func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive })
+                ?? scenes.first,
+              let root = scene.keyWindow?.rootViewController
+                ?? scene.windows.first?.rootViewController,
+              root.viewIfLoaded?.window != nil else { return nil }
+
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+        return top
+    }
+
     /// Publishes the current Game Center state.
     ///
     /// Always hops to the main queue: GameKit's authenticate handler fires on
@@ -272,38 +344,28 @@ class GameCenterManager: NSObject, ObservableObject {
         }
     }
 
-    /// Presents Game Center, or does nothing if it isn't usable yet.
-    ///
-    /// Presenting `GKGameCenterViewController` before authentication completes
-    /// puts up a modal that never finishes loading and never shows its Done
-    /// button — the app looks frozen with no way back. The guard is the fix; the
-    /// button is also disabled in the UI while unauthenticated so the tap isn't
-    /// silently ignored.
-    /// Re-reads Game Center's own state.
+    /// Re-reads Game Center's own state and retries the held sign-in sheet.
+    /// Returns true if that sheet went up, so the caller can skip the "go to
+    /// Settings" alert — the sheet is the better answer when we still have it.
     ///
     /// Deliberately does NOT reassign `authenticateHandler`. Apple's contract
     /// is that it's set once; reassigning restarts the flow and can leave
     /// authentication worse off than before. `GKLocalPlayer.local` keeps
     /// `isAuthenticated` current on its own, so re-reading is enough to catch
     /// someone who signed in from Settings mid-session.
-    func refreshAuthenticationState() {
+    @discardableResult
+    func refreshAuthenticationState() -> Bool {
         playerAuthenticated()
+        return presentPendingSignIn()
     }
 
+    /// Presents Game Center, or does nothing if it isn't usable yet.
+    ///
+    /// Presenting `GKGameCenterViewController` before authentication completes
+    /// puts up a modal that never finishes loading and never shows its Done
+    /// button — the app looks frozen with no way back. The guard is the fix.
     func showLeaderboard() {
-        guard isAuthenticated else { return }
-
-        guard let scene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first(where: { $0.activationState == .foregroundActive })
-                ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-              let root = scene.keyWindow?.rootViewController
-                ?? scene.windows.first?.rootViewController else { return }
-
-        // Presenting on a controller that is already presenting does nothing at
-        // all, so walk to whatever is actually on top.
-        var top = root
-        while let presented = top.presentedViewController { top = presented }
+        guard isAuthenticated, let top = topViewController() else { return }
 
         let gcVC = GKGameCenterViewController(state: .leaderboards)
         gcVC.gameCenterDelegate = self
@@ -4757,6 +4819,15 @@ struct GalacticCanvasView: View {
     @State private var showProfile = false
     @State private var showGameCenterHelp = false
 
+    /// The selection panel and the hint line both reserve their space whether or
+    /// not they have anything to say. They used to appear and disappear inside
+    /// the main VStack, which resized the board's ScrollView on every tap — so
+    /// selecting a tile shunted the whole grid upward and you had to re-find the
+    /// tile you were aiming at. There is room for both on an iPhone, so the
+    /// space is simply always there.
+    private static let selectionPanelHeight: CGFloat = 92
+    private static let hintLineHeight: CGFloat = 32
+
     private var selectedItem: CelestialItem? {
         selectedPosition.flatMap { item(at: $0) }
     }
@@ -4889,8 +4960,9 @@ struct GalacticCanvasView: View {
                         // and no idea why.
                         if gameCenter.isAuthenticated {
                             GameCenterManager.shared.showLeaderboard()
-                        } else {
-                            gameCenter.refreshAuthenticationState()
+                        } else if !gameCenter.refreshAuthenticationState() {
+                            // Only send them to Settings when there was no
+                            // sign-in sheet left to show them.
                             showGameCenterHelp = true
                         }
                     } label: {
@@ -5039,6 +5111,8 @@ struct GalacticCanvasView: View {
             .font(.caption)
             .foregroundColor(blockReason == nil ? .yellow.opacity(0.9) : .red.opacity(0.9))
             .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .frame(height: Self.hintLineHeight)
             .padding(.horizontal)
     }
 
@@ -5078,8 +5152,19 @@ struct GalacticCanvasView: View {
 
     /// The number the board used to hide. Shows what the selected tile actually
     /// produces and which neighbours are changing it.
-    @ViewBuilder
+    ///
+    /// Wrapped in a fixed-height ZStack so the board above never moves: the
+    /// panel's own content is what appears and disappears, not its footprint.
     private var selectionPanel: some View {
+        ZStack {
+            selectionPanelContent
+        }
+        .frame(height: Self.selectionPanelHeight)
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder
+    private var selectionPanelContent: some View {
         if let position = selectedPosition,
            let item = selectedItem,
            let tile = tile(at: position) {
@@ -5105,6 +5190,7 @@ struct GalacticCanvasView: View {
                 Text("\(item.element.roleName) — \(item.element.roleDetail)")
                     .font(.caption2)
                     .foregroundColor(.white.opacity(0.65))
+                    .lineLimit(2)
 
                 if breakdown.isModified {
                     HStack(spacing: 8) {
@@ -5116,11 +5202,10 @@ struct GalacticCanvasView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(10)
             .background(.ultraThinMaterial)
             .cornerRadius(12)
-            .padding(.horizontal)
         }
     }
 
