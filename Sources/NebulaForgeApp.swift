@@ -2691,6 +2691,12 @@ class GameViewModel: ObservableObject {
     @Published var stars: [Star] = []
     /// Stardust earned while the app was closed, surfaced once on launch.
     @Published var pendingOfflineEarnings: Double = 0
+    /// How long the player was actually away, and whether the galaxy filled up
+    /// before they got back. The cap has always existed; nothing ever told the
+    /// player about it, so time was being silently thrown away with no way to
+    /// learn that it was happening.
+    @Published var pendingOfflineHoursAway: Double = 0
+    @Published var pendingOfflineWasCapped = false
     /// Transient banner text describing the most recent merge.
     @Published var lastMergeSummary: String?
 
@@ -4395,12 +4401,18 @@ class GameViewModel: ObservableObject {
         // Credit production earned while the app was closed, capped so a long
         // absence can't return a nonsensical balance.
         if let lastSave = defaults.object(forKey: DefaultsKey.lastSaveDate) as? Date {
-            let elapsed = min(Date().timeIntervalSince(lastSave), offlineCapHours * 3600)
+            let away = Date().timeIntervalSince(lastSave)
+            let cap = offlineCapHours * 3600
+            let elapsed = min(away, cap)
             let earned = idleEngine.totalProductionPerSec * elapsed
             // Only worth interrupting the player for a meaningful amount.
             if elapsed > 60, earned > 1 {
                 stardust += earned
                 pendingOfflineEarnings = earned
+                pendingOfflineHoursAway = away / 3600
+                // A minute of slack, so a return at almost exactly the cap
+                // isn't reported as lost time.
+                pendingOfflineWasCapped = away > cap + 60
             } else if earned > 0 {
                 stardust += earned
             }
@@ -4458,9 +4470,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showOfflineEarnings, onDismiss: {
             gameVM.pendingOfflineEarnings = 0
+            gameVM.pendingOfflineHoursAway = 0
+            gameVM.pendingOfflineWasCapped = false
             showNextPrompt()
         }) {
-            OfflineEarningsView(amount: gameVM.pendingOfflineEarnings)
+            OfflineEarningsView(amount: gameVM.pendingOfflineEarnings,
+                                hoursAway: gameVM.pendingOfflineHoursAway,
+                                capHours: gameVM.offlineCapHours,
+                                wasCapped: gameVM.pendingOfflineWasCapped)
         }
         .sheet(isPresented: $showDailyReward) {
             DailyRewardView()
@@ -4481,12 +4498,19 @@ struct ContentView: View {
                 NotificationManager.shared.rescheduleStreakReminder(
                     streak: gameVM.dailyStreak,
                     claimedToday: gameVM.pendingDailyReward == nil)
+                // Scheduled from the moment they leave, which is when the
+                // offline clock actually starts.
+                NotificationManager.shared.scheduleGalaxyFullReminder(
+                    inHours: gameVM.offlineCapHours,
+                    producing: gameVM.idleEngine.totalProductionPerSec > 0)
                 gameVM.saveGameState()
                 // Backgrounding is the last reliable moment before the app can
                 // be killed, so this one bypasses the rate limit.
                 gameVM.flushToCloud()
             case .active:
                 NotificationManager.shared.clearBadge()
+                // They're back, so the "full" reminder would be noise.
+                NotificationManager.shared.cancelGalaxyFullReminder()
                 // Catches someone who signed into Game Center while away, and
                 // rolls the daily quests over if midnight passed.
                 GameCenterManager.shared.refreshAuthenticationState()
@@ -4972,6 +4996,19 @@ struct GoalRow: View {
 struct OfflineEarningsView: View {
     @Environment(\.dismiss) var dismiss
     let amount: Double
+    /// How long they were away, how long the galaxy banks for, and whether the
+    /// two crossed. Shown rather than hidden: a player who doesn't know the cap
+    /// exists can't decide when to come back, and losing hours invisibly is the
+    /// kind of thing people notice only as "this game feels bad".
+    var hoursAway: Double = 0
+    var capHours: Double = 0
+    var wasCapped: Bool = false
+
+    private func hours(_ value: Double) -> String {
+        value < 1
+            ? "\(Int((value * 60).rounded()))m"
+            : "\(Int(value))h \(Int((value.truncatingRemainder(dividingBy: 1) * 60).rounded()))m"
+    }
 
     var body: some View {
         ZStack {
@@ -5001,6 +5038,23 @@ struct OfflineEarningsView: View {
                 .padding()
                 .background(.ultraThinMaterial)
                 .cornerRadius(16)
+
+                if capHours > 0 {
+                    VStack(spacing: 4) {
+                        if wasCapped {
+                            Text("Away \(hours(hoursAway)) — your galaxy banks \(hours(capHours)).")
+                                .foregroundColor(.orange)
+                            Text("The rest didn't bank. Long Orbit raises the limit.")
+                                .foregroundColor(.white.opacity(0.6))
+                        } else {
+                            Text("Away \(hours(hoursAway)) of \(hours(capHours)) banked.")
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                    }
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                }
 
                 Button {
                     dismiss()
@@ -7509,6 +7563,36 @@ final class NotificationManager: ObservableObject {
         let trigger = UNCalendarNotificationTrigger(dateMatching: when, repeats: true)
         center.add(UNNotificationRequest(identifier: "nf.streak",
                                          content: content, trigger: trigger))
+    }
+
+    /// Fires the moment offline production stops accruing.
+    ///
+    /// This is the one notification that tells the player something they can
+    /// act on and could not otherwise know: past this point the galaxy is
+    /// producing nothing and every further hour away is thrown away. Scheduled
+    /// on background and cleared on return, so it never fires while they are
+    /// actually playing.
+    func scheduleGalaxyFullReminder(inHours capHours: Double, producing: Bool) {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["nf.galaxyfull"])
+        // Nothing on the board means nothing accrues, so there is nothing to
+        // come back for and the notification would be a lie.
+        guard isAuthorized, producing, capHours > 0 else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Your galaxy is full"
+        content.body = "It's banked all the Stardust it can hold. Collect it so it starts producing again."
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: capHours * 3600,
+                                                        repeats: false)
+        center.add(UNNotificationRequest(identifier: "nf.galaxyfull",
+                                         content: content, trigger: trigger))
+    }
+
+    func cancelGalaxyFullReminder() {
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: ["nf.galaxyfull"])
     }
 
     /// Cleared whenever the app opens, so the badge always means something.
