@@ -767,6 +767,13 @@ struct Star: Codable, Identifiable, Equatable {
     var y: Double
     var createdAt: Date = Date()
 
+    /// Which of the three worlds for this element to draw.
+    ///
+    /// Derived from the id's own bytes, not `hashValue` — Swift seeds hashing
+    /// per process, so a star would quietly become a different world on every
+    /// launch, and the map is supposed to be a stable record.
+    var worldVariant: Int { Int(id.uuid.0 % 3) }
+
     /// What this star is worth to a constellation.
     ///
     /// Stars used to count equally, which meant a Supernova off a board of
@@ -4976,7 +4983,9 @@ struct StarChartView: View {
     private func starView(_ star: Star, in size: CGSize) -> some View {
         // Magnitude drives size much harder than before. A tier-8 run should
         // look like an achievement next to a tier-2 one, not one pixel wider.
-        let diameter = 14 + CGFloat(min(star.magnitude, 9)) * 4
+        // The floor is higher than for plain dots: a world has surface detail
+        // worth seeing, and below about 22pt it just reads as a smudge.
+        let diameter = 22 + CGFloat(min(star.magnitude, 9)) * 4
         let isSelected = selected?.id == star.id
         let position = dragging == star.id
             ? dragPoint
@@ -4989,14 +4998,15 @@ struct StarChartView: View {
                 .blur(radius: 8)
                 .scaleEffect(twinkle ? 1.08 : 0.94)
 
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [.white, star.element.tint, star.element.tint.opacity(0.7)],
-                        center: .init(x: 0.35, y: 0.3),
-                        startRadius: 0, endRadius: diameter * 0.7)
-                )
+            // A world rather than a dot. Three per element, picked stably from
+            // the star's own id, so a chart of a dozen Supernovas is a dozen
+            // recognisably different places instead of the same circle twelve
+            // times in four colours.
+            Image("world_\(star.element.rawValue)_\(star.worldVariant)")
+                .resizable()
+                .interpolation(.high)
                 .frame(width: diameter, height: diameter)
+                .shadow(color: star.element.tint.opacity(0.7), radius: diameter * 0.18)
 
             // A hybrid run is the rarest thing that can happen, so it gets a
             // marker you can pick out across the map.
@@ -6287,15 +6297,16 @@ struct GalacticCanvasView: View {
             .sheet(isPresented: $showProfile) {
                 ProfileView().environmentObject(gameVM)
             }
+            // No "Open Settings" button. `openSettingsURLString` opens this
+            // app's own settings pane, which has no Game Center switch on it —
+            // it sent the player somewhere the thing they were told to look for
+            // does not exist. Game Center lives in the Settings app under Apps,
+            // and there is no public URL that deep-links to it, so the honest
+            // move is to say where it is rather than open the wrong page.
             .alert("Leaderboards need Game Center", isPresented: $showGameCenterHelp) {
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
-                Button("Not now", role: .cancel) { }
+                Button("OK", role: .cancel) { }
             } message: {
-                Text("Sign in to Game Center to see how your galaxy ranks. Your scores are already being recorded and will appear once you do.\n\n\(gameCenter.diagnosticSummary)")
+                Text("Your scores are already being recorded and will appear once Game Center signs in. Open the Settings app, go to Apps, then Game Center, and make sure you're signed in there.\n\n\(gameCenter.diagnosticSummary)")
             }
         }
     }
