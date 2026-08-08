@@ -336,6 +336,39 @@ final class EconomyTests: XCTestCase {
         XCTAssertEqual(Set(quests.map(\.id)).count, 3, "the same quest twice in one day")
     }
 
+    func testUnavailableQuestsAreNeverDealt() {
+        // The bug: "Unlock 3 tiles" was dealt on a fully-open board, where
+        // nothing can be unlocked until the next Supernova. It quietly ate one
+        // of the day's three gem slots.
+        let tileQuests: Set<String> = ["q_tile_1", "q_tile_3"]
+        let available = DailyQuestCatalog.pool.filter { !tileQuests.contains($0.id) }
+
+        for offset in 0..<400 {
+            let date = Date(timeIntervalSince1970: 1_800_000_000 + Double(offset) * 86_400)
+            let dealt = DailyQuestCatalog.deal(from: available, date: date).map(\.id)
+            XCTAssertEqual(dealt.count, 3, "day \(offset) dealt \(dealt.count) quests")
+            XCTAssertEqual(Set(dealt).count, 3, "day \(offset) dealt a duplicate")
+            XCTAssertTrue(tileQuests.isDisjoint(with: Set(dealt)),
+                          "day \(offset) dealt an unfinishable tile quest")
+        }
+    }
+
+    func testFilteredDealIsStillStableWithinADay() {
+        let available = DailyQuestCatalog.pool.filter { $0.id != "q_tile_3" }
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(DailyQuestCatalog.deal(from: available, date: day).map(\.id),
+                       DailyQuestCatalog.deal(from: available,
+                                              date: day.addingTimeInterval(3600)).map(\.id),
+                       "filtering must not make the day's quests reroll")
+    }
+
+    func testDealFallsBackRatherThanReturningTooFewQuests() {
+        // A pool filtered down below three would otherwise strand the player
+        // with a short list and less gem income than the day owes them.
+        let starved = Array(DailyQuestCatalog.pool.prefix(2))
+        XCTAssertEqual(DailyQuestCatalog.deal(from: starved).count, 3)
+    }
+
     func testDailyQuestsAreStableWithinADayAndRotateAcross() {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let sameDay = day.addingTimeInterval(3600)

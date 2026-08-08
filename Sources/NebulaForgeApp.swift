@@ -1807,6 +1807,23 @@ struct DailyQuest: Identifiable {
     let gemReward: Int
     /// Measured against counters that reset at midnight.
     let progress: (GameViewModel) -> Int
+    /// Whether the player could finish this today at all. "Unlock 3 tiles" on a
+    /// fully-open board is the case that made this necessary: nothing can be
+    /// unlocked until a Supernova reopens the grid, so dealing it silently
+    /// burned one of the day's three gem slots.
+    let isAvailable: (GameViewModel) -> Bool
+
+    init(id: String, title: String, icon: String, target: Int, gemReward: Int,
+         isAvailable: @escaping (GameViewModel) -> Bool = { _ in true },
+         progress: @escaping (GameViewModel) -> Int) {
+        self.id = id
+        self.title = title
+        self.icon = icon
+        self.target = target
+        self.gemReward = gemReward
+        self.isAvailable = isAvailable
+        self.progress = progress
+    }
 
     func currentProgress(_ vm: GameViewModel) -> Int { min(progress(vm), target) }
     func isComplete(_ vm: GameViewModel) -> Bool { progress(vm) >= target }
@@ -1827,7 +1844,8 @@ enum DailyQuestCatalog {
         DailyQuest(id: "q_prestige_1", title: "Trigger a Supernova", icon: "burst.fill",
                    target: 1, gemReward: 10) { $0.todayPrestiges },
         DailyQuest(id: "q_tile_1", title: "Unlock a tile", icon: "lock.open.fill",
-                   target: 1, gemReward: 5) { $0.todayTilesUnlocked },
+                   target: 1, gemReward: 5,
+                   isAvailable: { $0.lockedTileCount >= 1 }) { $0.todayTilesUnlocked },
         // Heavier versions of the same tasks. With only seven in the pool a
         // regular player saw the same three every couple of days; twelve keeps
         // the rotation from going stale, and the bigger targets give someone
@@ -1841,18 +1859,29 @@ enum DailyQuestCatalog {
         DailyQuest(id: "q_comet_8", title: "Catch 8 comets", icon: "sparkles",
                    target: 8, gemReward: 13) { $0.todayComets },
         DailyQuest(id: "q_tile_3", title: "Unlock 3 tiles", icon: "lock.open.fill",
-                   target: 3, gemReward: 12) { $0.todayTilesUnlocked },
+                   target: 3, gemReward: 12,
+                   isAvailable: { $0.lockedTileCount >= 3 }) { $0.todayTilesUnlocked },
     ]
 
     /// Three quests, chosen by the calendar day so they're the same on every
     /// device and can't be rerolled by reinstalling.
     static func today(_ date: Date = Date()) -> [DailyQuest] {
+        deal(from: pool, date: date)
+    }
+
+    /// The same day-seeded rotation, run over a pre-filtered pool so a quest the
+    /// player physically cannot finish never takes one of the three slots.
+    ///
+    /// Filtering happens before the pick rather than after, so the day still
+    /// yields three quests instead of two.
+    static func deal(from available: [DailyQuest], date: Date = Date()) -> [DailyQuest] {
+        let source = available.count >= 3 ? available : pool
         let day = Int(date.timeIntervalSince1970 / 86_400)
-        guard pool.count >= 3 else { return pool }
+        guard source.count >= 3 else { return source }
         var picked: [DailyQuest] = []
-        var index = abs(day) % pool.count
+        var index = abs(day) % source.count
         while picked.count < 3 {
-            let candidate = pool[index % pool.count]
+            let candidate = source[index % source.count]
             if !picked.contains(where: { $0.id == candidate.id }) {
                 picked.append(candidate)
             }
@@ -2344,6 +2373,9 @@ class GameViewModel: ObservableObject {
     @Published var todayPrestiges: Int = 0
     @Published var todayTilesUnlocked: Int = 0
     @Published var claimedQuestIDs: Set<String> = []
+    /// The three quest IDs dealt for the current day, frozen so the set can't
+    /// change under the player as their board state changes.
+    @Published private(set) var todayQuestIDs: [String] = []
     private var questDay: Date?
     @Published var highestTierReached: Int = 0
     @Published var claimedGoalIDs: Set<String> = []
@@ -2667,6 +2699,7 @@ class GameViewModel: ObservableObject {
         static let prestigeCount = "nf.prestigeCount"
         static let discoveredHybrids = "nf.discoveredHybrids"
         static let questDay = "nf.questDay"
+        static let todayQuestIDs = "nf.todayQuestIDs"
         static let claimedQuests = "nf.claimedQuests"
         static let todayCounters = "nf.todayCounters"
         static let itemsForged = "nf.itemsForged"
@@ -3374,7 +3407,29 @@ class GameViewModel: ObservableObject {
 
     /// Today's three quests, with the ones already collected still listed so the
     /// player can see they finished them.
-    var todayQuests: [DailyQuest] { DailyQuestCatalog.today() }
+    ///
+    /// Read from the IDs dealt at the day roll rather than recomputed live.
+    /// Deriving it live would let the set churn mid-day: unlocking your last
+    /// tile makes the tile quests unavailable, which would silently swap one out
+    /// from under you — possibly one you had already part-finished.
+    var todayQuests: [DailyQuest] {
+        let dealt = todayQuestIDs.compactMap { id in
+            DailyQuestCatalog.pool.first { $0.id == id }
+        }
+        return dealt.count == 3 ? dealt : DailyQuestCatalog.today()
+    }
+
+    /// Picks the day's three from what the player can actually finish right now.
+    func dealDailyQuests(for date: Date = Date()) {
+        let available = DailyQuestCatalog.pool.filter { $0.isAvailable(self) }
+        todayQuestIDs = DailyQuestCatalog.deal(from: available, date: date).map(\.id)
+    }
+
+    /// Tiles still closed on the board. Zero means the tile quests are dead
+    /// weight until the next Supernova reopens the grid.
+    var lockedTileCount: Int {
+        gridTiles.flatMap { $0 }.filter { !$0.isUnlocked }.count
+    }
 
     var claimableQuests: [DailyQuest] {
         todayQuests.filter { $0.isComplete(self) && !claimedQuestIDs.contains($0.id) }
@@ -3402,7 +3457,12 @@ class GameViewModel: ObservableObject {
     /// Zeroes the daily counters when the calendar day turns over.
     private func rollQuestDayIfNeeded() {
         let today = Calendar.current.startOfDay(for: Date())
-        guard questDay != today else { return }
+        // Saves written before the deal was stored have a current questDay but
+        // no quest IDs; deal once rather than waiting for tomorrow.
+        guard questDay != today else {
+            if todayQuestIDs.count != 3 { dealDailyQuests() }
+            return
+        }
         questDay = today
         todayMerges = 0
         todayFusions = 0
@@ -3411,6 +3471,7 @@ class GameViewModel: ObservableObject {
         todayPrestiges = 0
         todayTilesUnlocked = 0
         claimedQuestIDs = []
+        dealDailyQuests()
     }
 
     var freeUnlockedTiles: [GridTile] {
@@ -3552,6 +3613,7 @@ class GameViewModel: ObservableObject {
         defaults.set(prestigeCount, forKey: DefaultsKey.prestigeCount)
         defaults.set(Array(discoveredHybridIDs), forKey: DefaultsKey.discoveredHybrids)
         defaults.set(Array(claimedQuestIDs), forKey: DefaultsKey.claimedQuests)
+        defaults.set(todayQuestIDs, forKey: DefaultsKey.todayQuestIDs)
         if let questDay {
             defaults.set(questDay, forKey: DefaultsKey.questDay)
         }
@@ -3785,6 +3847,7 @@ class GameViewModel: ObservableObject {
         prestigeCount = defaults.integer(forKey: DefaultsKey.prestigeCount)
         discoveredHybridIDs = Set(defaults.stringArray(forKey: DefaultsKey.discoveredHybrids) ?? [])
         claimedQuestIDs = Set(defaults.stringArray(forKey: DefaultsKey.claimedQuests) ?? [])
+        todayQuestIDs = defaults.stringArray(forKey: DefaultsKey.todayQuestIDs) ?? []
         questDay = defaults.object(forKey: DefaultsKey.questDay) as? Date
         // Saves written before lifetime forging was tracked separately fall back
         // to the per-run count, which is the closest honest answer.
